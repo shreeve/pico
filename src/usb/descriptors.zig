@@ -156,6 +156,19 @@ pub const StringDescriptor = extern struct {
     // Followed by UTF-16LE code units
 };
 
+// ── Wire-format size assertions ────────────────────────────────────────
+// extern struct may add tail padding; these catch it at compile time.
+// Descriptor parsing uses wire-format constants (7, 9, 9) for bounds
+// checks, not @sizeOf, so padding doesn't cause missed descriptors.
+
+comptime {
+    if (@sizeOf(SetupPacket) != 8) @compileError("SetupPacket must be 8 bytes");
+    if (@sizeOf(DeviceDescriptor) != 18) @compileError("DeviceDescriptor must be 18 bytes");
+    // ConfigDescriptor: 9 wire bytes, but @sizeOf may be 10 due to u16 tail padding
+    // InterfaceDescriptor: 9 wire bytes, @sizeOf should be 9 (all u8)
+    // EndpointDescriptor: 7 wire bytes, but @sizeOf may be 8 due to u16 tail padding
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 pub inline fn makeU16(hi: u8, lo: u8) u16 {

@@ -12,6 +12,10 @@ pub fn init() void {
     hal.platform.uartInit(UART_BASE, 115200);
 }
 
+pub fn putc(ch: u8) void {
+    hal.platform.uartWrite(UART_BASE, ch);
+}
+
 pub fn puts(s: []const u8) void {
     hal.platform.uartPuts(UART_BASE, s);
 }

@@ -20,21 +20,18 @@ const memory = @import("runtime/memory.zig");
 const event_loop = @import("runtime/event_loop.zig");
 const engine = @import("vm/engine.zig");
 const console = @import("services/console.zig");
-const wifi = @import("services/wifi.zig");
 const storage = @import("services/storage.zig");
-const tcp = @import("net/tcp.zig");
-const protocol = @import("net/protocol.zig");
 const config = @import("config/config.zig");
-const provisioning = @import("provisioning/wifi.zig");
 const usb_host = @import("usb/host.zig");
+const usb_ftdi = @import("usb/ftdi.zig");
 const usb_js = @import("usb/js.zig");
 
 comptime {
     _ = @import("services/console.zig");
     _ = @import("services/gpio.zig");
     _ = @import("services/timer.zig");
-    _ = @import("services/wifi.zig");
-    _ = @import("services/mqtt.zig");
+    _ = @import("services/wifi.zig"); // exports needed by C function table
+    _ = @import("services/mqtt.zig"); // exports needed by C function table
     _ = @import("services/storage.zig");
     _ = @import("usb/js.zig");
 }
@@ -129,41 +126,20 @@ pub fn main() noreturn {
     };
     puts("[boot] MQuickJS VM ready\n");
 
-    // 6. WiFi
-    wifi.init();
-    if (config.isConfigured()) {
-        if (config.wifiSsid()) |ssid| {
-            const pass = config.wifiPass() orelse "";
-            _ = wifi.connect(ssid, pass);
-        }
-    }
-    if (!wifi.isConnected()) {
-        puts("[boot] no active Wi-Fi link — provisioning mode\n");
-        provisioning.start();
-    }
-
-    // 7. Network
-    tcp.init();
-    protocol.init();
-
-    // 8. USB Host
+    // 6. USB Host
     usb_host.init();
     usb_js.initCallbacks();
 
     // Register I/O poll callbacks
-    event_loop.registerIO(wifi.poll) catch {};
-    event_loop.registerIO(tcp.poll) catch {};
-    event_loop.registerIO(protocol.poll) catch {};
     event_loop.registerIO(usb_host.poll) catch {};
+    event_loop.registerIO(usb_ftdi.pollTick) catch {};
 
     // 9. Try loading a script from flash
     loadStoredScript();
 
     // 10. Run built-in hello script if nothing stored
-    if (!protocol.hasScript()) {
-        puts("[boot] running built-in hello script\n");
-        _ = engine.eval(hello_script, "<boot>") catch {};
-    }
+    puts("[boot] running built-in hello script\n");
+    _ = engine.eval(hello_script, "<boot>") catch {};
 
     puts("[boot] uptime: ");
     printU64(hal.millis());

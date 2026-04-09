@@ -1,15 +1,12 @@
 // ============================================================================
-// USB Host Driver for RP2040 — EPX-only mode
+// USB Host Driver for RP2040
 //
-// Ported from Steve Shreeve's PicoUSB C implementation to bare-metal Zig.
-// All transfers go through the single software endpoint (EPX) for maximum
-// control and simplicity.  Hardware interrupt polling endpoints are not used.
+// Ported from PicoUSB (Steve Shreeve's C implementation) to bare-metal Zig.
+// Architecture follows picousb closely: pipes, task queue, stepped enumeration.
 //
-// Architecture:
-//   ISR → event queue → event loop → callbacks (Zig or JS)
+// Flow: ISR → task queue → poll() → callbacks/enumeration
 // ============================================================================
 
-const std = @import("std");
 const reg = @import("regs.zig");
 const desc = @import("descriptors.zig");
 const hal = @import("../platform/hal.zig");
@@ -17,10 +14,9 @@ const console = @import("../services/console.zig");
 
 // ── Configuration ──────────────────────────────────────────────────────
 
-pub const MAX_DEVICES = 3; // dev0 + 2 user devices
-pub const MAX_ENDPOINTS = 7; // EP0 per device + extras
-pub const MAX_PACKET_SIZE = 64;
-pub const CTRL_BUF_SIZE = 255;
+pub const MAX_DEVICES = 2; // dev0 + 1 user device
+pub const MAX_PIPES = 16; // ctrl + 15
+pub const MAX_CTRL_BUF = 320;
 
 // ── Speed ──────────────────────────────────────────────────────────────
 
@@ -32,25 +28,30 @@ pub const Speed = enum(u2) {
 
 // ── Device state ───────────────────────────────────────────────────────
 
-pub const DeviceState = enum {
+pub const DeviceState = enum(u8) {
     disconnected,
     allocated,
-    enumerating,
+    detected,
     addressed,
-    active,
+    enumerated,
+    configured,
+    ready,
     suspended,
 };
 
 pub const Device = struct {
+    dev_addr: u8 = 0,
     state: DeviceState = .disconnected,
     speed: Speed = .disconnected,
+    maxsize0: u16 = 0,
+
     class: u8 = 0,
     subclass: u8 = 0,
     protocol: u8 = 0,
+
     vid: u16 = 0,
     pid: u16 = 0,
     version: u16 = 0,
-    max_packet_size0: u8 = 8,
     i_manufacturer: u8 = 0,
     i_product: u8 = 0,
     i_serial: u8 = 0,
@@ -60,488 +61,787 @@ pub const Device = struct {
     }
 };
 
-// ── Endpoint ───────────────────────────────────────────────────────────
+// ── Pipe (matches picousb's pipe_t) ────────────────────────────────────
 
-pub const TransferCallback = *const fn (*Endpoint, []const u8) void;
+pub const PipeStatus = enum(u8) {
+    unconfigured,
+    configured,
+    started,
+    finished,
+};
 
-pub const Endpoint = struct {
+pub const TransferResult = struct {
     dev_addr: u8 = 0,
-    ep_addr: u8 = 0,
-    ep_type: u8 = 0, // control/bulk/interrupt/isochronous
-    maxsize: u16 = 8,
-    interval: u16 = 0, // polling interval in ms (0 = not polled)
-    data_pid: u1 = 0, // toggle DATA0/DATA1
-    configured: bool = false,
-    active: bool = false,
-    setup: bool = false,
-
-    // Transfer state
+    ep_num: u8 = 0,
+    dir_in: bool = false,
     user_buf: [*]u8 = undefined,
+    len: u16 = 0,
+    status: u8 = 0,
+};
+
+pub const Callback = *const fn (*anyopaque) void;
+pub const TransferCallback = *const fn (?*anyopaque, *const TransferResult) void;
+
+pub const Pipe = struct {
+    dev_addr: u8 = 0,
+    ep_num: u4 = 0,
+    ep_in: bool = false,
+    transfer_type: u8 = 0,
+    interval: u16 = 0,
+    maxsize: u16 = 0,
+
+    buf_addr: u32 = 0, // DPSRAM buffer address
+    user_buf: [*]u8 = undefined,
+
+    ecr_addr: u32 = 0, // endpoint control register address (DPSRAM)
+    bcr_addr: u32 = 0, // buffer control register address (DPSRAM)
+
+    status: PipeStatus = .unconfigured,
+    setup: bool = false,
+    data_pid: u1 = 0,
     bytes_left: u16 = 0,
     bytes_done: u16 = 0,
-    cb: ?TransferCallback = null,
 
-    pub inline fn isIn(self: *const Endpoint) bool {
-        return self.ep_addr & desc.DIR_IN != 0;
-    }
+    cb: ?Callback = null,
+    cb_arg: ?*anyopaque = null,
+    xfer_cb: ?TransferCallback = null,
+    xfer_ctx: ?*anyopaque = null,
 
-    pub inline fn num(self: *const Endpoint) u4 {
-        return @intCast(self.ep_addr & 0x0F);
-    }
-
-    pub fn clear(self: *Endpoint) void {
-        self.active = false;
+    pub fn resetState(self: *Pipe) void {
+        self.status = .finished;
         self.setup = false;
-        self.data_pid = 0;
-        self.user_buf = undefined;
         self.bytes_left = 0;
         self.bytes_done = 0;
     }
+
+    pub fn clear(self: *Pipe) void {
+        self.* = .{};
+    }
 };
+
+// ── Task queue (ISR → main loop, matches picousb) ──────────────────────
+
+pub const TaskType = enum(u8) {
+    callback,
+    connect,
+    transfer,
+};
+
+pub const ConnectInfo = struct {
+    speed: Speed = .disconnected,
+};
+
+pub const TransferInfo = struct {
+    status: u8 = 0,
+    dev_addr: u8 = 0,
+    ep_num: u8 = 0,
+    user_buf: ?[*]u8 = null,
+    len: u16 = 0,
+};
+
+pub const Task = struct {
+    task_type: TaskType = .callback,
+    guid: u32 = 0,
+
+    connect: ConnectInfo = .{},
+    transfer: TransferInfo = .{},
+
+    cb: ?Callback = null,
+    cb_arg: ?*anyopaque = null,
+    xfer_cb: ?TransferCallback = null,
+    xfer_ctx: ?*anyopaque = null,
+};
+
+const TASK_QUEUE_SIZE = 64;
+var task_queue: [TASK_QUEUE_SIZE]Task = [_]Task{.{}} ** TASK_QUEUE_SIZE;
+var tq_head: usize = 0;
+var tq_tail: usize = 0;
+var tq_count: usize = 0;
+var next_guid: u32 = 1;
+
+fn taskEnqueue(task: Task) void {
+    if (tq_count >= TASK_QUEUE_SIZE) return; // full, drop
+    var t = task;
+    t.guid = next_guid;
+    next_guid +%= 1;
+    task_queue[tq_tail] = t;
+    tq_tail = (tq_tail + 1) % TASK_QUEUE_SIZE;
+    tq_count += 1;
+}
+
+fn taskDequeue() ?Task {
+    if (tq_count == 0) return null;
+    const t = task_queue[tq_head];
+    tq_head = (tq_head + 1) % TASK_QUEUE_SIZE;
+    tq_count -= 1;
+    return t;
+}
+
+fn queueCallback(cb: Callback, arg: *anyopaque) void {
+    taskEnqueue(.{
+        .task_type = .callback,
+        .cb = cb,
+        .cb_arg = arg,
+    });
+}
 
 // ── State ──────────────────────────────────────────────────────────────
 
 var devices: [MAX_DEVICES]Device = [_]Device{.{}} ** MAX_DEVICES;
-var endpoints: [MAX_ENDPOINTS]Endpoint = [_]Endpoint{.{}} ** MAX_ENDPOINTS;
-var ctrl_buf: [CTRL_BUF_SIZE]u8 = undefined;
+pub var pipes: [MAX_PIPES]Pipe = [_]Pipe{.{}} ** MAX_PIPES;
+var ctrl_buf: [MAX_CTRL_BUF]u8 align(4) = undefined;
 var initialized: bool = false;
-
-// The shared EPX endpoint (index 0)
-fn epx() *Endpoint {
-    return &endpoints[0];
-}
 
 fn dev0() *Device {
     return &devices[0];
 }
 
-// ── Event queue (ISR → main loop) ──────────────────────────────────────
-
-pub const EventKind = enum(u8) {
-    connect,
-    disconnect,
-    transfer_complete,
-    stall,
-    error_timeout,
-    error_data_seq,
-};
-
-pub const Event = struct {
-    kind: EventKind,
-    ep_idx: u8 = 0,
-    transfer_len: u16 = 0,
-    speed: Speed = .disconnected,
-};
-
-const EVENT_QUEUE_SIZE = 16;
-var event_queue: [EVENT_QUEUE_SIZE]Event = undefined;
-var eq_head: usize = 0;
-var eq_tail: usize = 0;
-
-fn enqueueEvent(ev: Event) void {
-    const next = (eq_tail + 1) % EVENT_QUEUE_SIZE;
-    if (next == eq_head) return; // full, drop event
-    event_queue[eq_tail] = ev;
-    eq_tail = next;
+fn ctrl() *Pipe {
+    return &pipes[0];
 }
 
-fn dequeueEvent() ?Event {
-    if (eq_head == eq_tail) return null;
-    const ev = event_queue[eq_head];
-    eq_head = (eq_head + 1) % EVENT_QUEUE_SIZE;
-    return ev;
+fn getDevice(addr: u8) *Device {
+    return &devices[addr];
 }
 
-// ── User callbacks ─────────────────────────────────────────────────────
-
-pub const ConnectCallback = *const fn (Speed) void;
-pub const DisconnectCallback = *const fn () void;
-pub const TransferDoneCallback = *const fn (*Endpoint, u16) void;
-
-var on_connect: ?ConnectCallback = null;
-var on_disconnect: ?DisconnectCallback = null;
-var on_transfer_done: ?TransferDoneCallback = null;
-
-pub fn setConnectCallback(cb: ConnectCallback) void {
-    on_connect = cb;
-}
-pub fn setDisconnectCallback(cb: DisconnectCallback) void {
-    on_disconnect = cb;
-}
-pub fn setTransferDoneCallback(cb: TransferDoneCallback) void {
-    on_transfer_done = cb;
+fn nextDevice() *Device {
+    for (devices[1..], 1..) |*d, i| {
+        if (d.state == .disconnected) {
+            d.state = .allocated;
+            d.dev_addr = @intCast(i);
+            return d;
+        }
+    }
+    @panic("No free devices remaining");
 }
 
-// ── NVIC (Cortex-M0+ interrupt controller) ─────────────────────────────
+fn clearDevice(addr: u8) void {
+    devices[addr].reset();
+}
 
-const NVIC_ISER: u32 = 0xE000_E100; // Interrupt Set-Enable
-const NVIC_ICER: u32 = 0xE000_E180; // Interrupt Clear-Enable
-const NVIC_ICPR: u32 = 0xE000_E280; // Interrupt Clear-Pending
+fn clearAllDevices() void {
+    for (&devices) |*d| d.reset();
+}
+
+fn clearAllPipes() void {
+    for (&pipes) |*p| p.clear();
+}
+
+// ── NVIC ───────────────────────────────────────────────────────────────
+
+const NVIC_ISER: u32 = 0xE000_E100;
+const NVIC_ICER: u32 = 0xE000_E180;
+const NVIC_ICPR: u32 = 0xE000_E280;
 const USBCTRL_IRQ: u5 = 5;
 
-fn nvicEnableIrq(irq: u5) void {
-    hal.regWrite(NVIC_ISER, @as(u32, 1) << irq);
+fn nvicEnable() void {
+    hal.regWrite(NVIC_ISER, @as(u32, 1) << USBCTRL_IRQ);
 }
 
-fn nvicDisableIrq(irq: u5) void {
-    hal.regWrite(NVIC_ICER, @as(u32, 1) << irq);
+fn nvicDisable() void {
+    hal.regWrite(NVIC_ICER, @as(u32, 1) << USBCTRL_IRQ);
 }
 
-fn nvicClearPending(irq: u5) void {
-    hal.regWrite(NVIC_ICPR, @as(u32, 1) << irq);
+fn nvicClearPending() void {
+    hal.regWrite(NVIC_ICPR, @as(u32, 1) << USBCTRL_IRQ);
 }
 
-// ── Init ───────────────────────────────────────────────────────────────
+// ── Pipe setup ─────────────────────────────────────────────────────────
 
-pub fn init() void {
-    console.puts("[usb] host init\n");
+fn setupPipe(pp: *Pipe, phe: u8, epd_addr: u8, epd_attrs: u8, epd_maxsize: u16, epd_interval: u8, user_buf: [*]u8) void {
+    const saved_dev_addr = pp.dev_addr;
 
-    // Ensure NVIC USB IRQ is disabled before touching USB hardware
-    nvicDisableIrq(USBCTRL_IRQ);
-    nvicClearPending(USBCTRL_IRQ);
-
-    // Reset the USB controller
-    const RESETS_USBCTRL: u32 = 1 << 24;
-    hal.regSet(hal.platform.RESETS_BASE, RESETS_USBCTRL);
-    hal.regClr(hal.platform.RESETS_BASE, RESETS_USBCTRL);
-    while ((hal.regRead(hal.platform.RESETS_BASE + 0x08) & RESETS_USBCTRL) == 0) {}
-
-    // Clear all state
-    reg.dpMemset(reg.DPSRAM_BASE, 0, 4096);
-
-    // Clear USB registers — disable interrupts first, then clear all status
-    reg.write(reg.INTE, 0);
-    reg.write(reg.MAIN_CTRL, 0);
-    reg.write(reg.SIE_CTRL, 0);
-    reg.write(reg.SIE_STATUS, 0xFFFFFFFF); // W1C: clear all status
-    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF); // W1C: clear all buffer status
-
-    // Configure as USB host
-    reg.write(reg.USB_MUXING, reg.MUXING_TO_PHY | reg.MUXING_SOFTCON);
-    reg.write(reg.USB_PWR, reg.PWR_VBUS_DETECT | reg.PWR_VBUS_DETECT_OVERRIDE_EN);
-    reg.write(reg.MAIN_CTRL, reg.MAIN_CTRL_CONTROLLER_EN | reg.MAIN_CTRL_HOST_NDEVICE);
-    reg.write(reg.SIE_CTRL, reg.SIE_CTRL_HOST_BASE);
-
-    // Clear device and endpoint state
-    for (&devices) |*d| d.reset();
-    for (&endpoints) |*ep| ep.* = .{};
-
-    // Configure EPX for control transfers (default 8-byte maxsize)
-    setupEpx(8);
-
-    // Clear any pending status one more time after configuration
-    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
-    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
-
-    // Enable USB interrupt sources (peripheral-level)
-    reg.write(reg.INTE, reg.INT_HOST_CONN_DIS | reg.INT_STALL | reg.INT_BUFF_STATUS | reg.INT_TRANS_COMPLETE | reg.INT_HOST_RESUME | reg.INT_ERROR_DATA_SEQ | reg.INT_ERROR_RX_TIMEOUT);
-
-    // Clear NVIC pending (in case INTS went high briefly) and enable
-    nvicClearPending(USBCTRL_IRQ);
-    nvicEnableIrq(USBCTRL_IRQ);
-
-    initialized = true;
-    console.puts("[usb] host ready\n");
-}
-
-pub fn deinit() void {
-    nvicDisableIrq(USBCTRL_IRQ);
-    reg.write(reg.INTE, 0);
-    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
-    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
-    nvicClearPending(USBCTRL_IRQ);
-    reg.write(reg.MAIN_CTRL, 0);
-    initialized = false;
-}
-
-fn setupEpx(maxsize: u16) void {
-    const ep = epx();
-    ep.* = .{
-        .dev_addr = 0,
-        .ep_addr = 0,
-        .ep_type = desc.TRANSFER_CONTROL,
-        .maxsize = maxsize,
-        .interval = 0,
-        .configured = true,
-        .user_buf = &ctrl_buf,
+    pp.* = .{
+        .dev_addr = saved_dev_addr,
+        .ep_num = @intCast(epd_addr & 0x0F),
+        .ep_in = (epd_addr & 0x80) != 0,
+        .transfer_type = epd_attrs & 0x03,
+        .interval = epd_interval,
+        .maxsize = epd_maxsize,
+        .user_buf = user_buf,
     };
 
-    // ECR: enable, control type, data buffer at EPX_DATA offset
-    const data_offset = reg.EPX_DATA & 0x0FFF;
-    const ecr = reg.EP_CTRL_ENABLE | reg.EP_CTRL_DOUBLE_BUFFERED | reg.EP_CTRL_INT_PER_DOUBLE_BUFFER | (@as(u32, desc.TRANSFER_CONTROL) << reg.EP_CTRL_BUFFER_TYPE_LSB) | data_offset;
-    reg.dpWrite(reg.EPX_CTRL, ecr);
-}
-
-// ── Endpoint management ────────────────────────────────────────────────
-
-pub fn findEndpoint(dev_addr: u8, ep_addr: u8) ?*Endpoint {
-    const want_ep0 = (ep_addr & ~@as(u8, desc.DIR_IN)) == 0;
-    if (dev_addr == 0 and want_ep0) return epx();
-
-    for (endpoints[1..]) |*ep| {
-        if (!ep.configured or ep.dev_addr != dev_addr) continue;
-        if (want_ep0 and (ep.ep_addr & ~@as(u8, desc.DIR_IN)) == 0) return ep;
-        if (ep.ep_addr == ep_addr) return ep;
+    if (phe == 0) {
+        pp.ecr_addr = reg.EPX_CTRL;
+        pp.bcr_addr = reg.EPX_BUF_CTRL;
+        pp.buf_addr = reg.EPX_DATA;
+    } else {
+        const i: u32 = @as(u32, phe) - 1;
+        pp.ecr_addr = reg.intEpCtrl(@intCast(i));
+        pp.bcr_addr = reg.intEpBufCtrl(@intCast(i));
+        pp.buf_addr = reg.EPX_DATA + (i + 2) * 64;
     }
-    return null;
-}
 
-pub fn allocEndpoint(dev_addr: u8, ep_desc: *const desc.EndpointDescriptor) ?*Endpoint {
-    for (endpoints[1..]) |*ep| {
-        if (!ep.configured) {
-            ep.* = .{
-                .dev_addr = dev_addr,
-                .ep_addr = ep_desc.bEndpointAddress,
-                .ep_type = ep_desc.bmAttributes & desc.TRANSFER_TYPE_MASK,
-                .maxsize = ep_desc.wMaxPacketSize,
-                .interval = ep_desc.bInterval,
-                .configured = true,
-                .user_buf = &ctrl_buf,
-            };
-            return ep;
+    // Clear BCR with settling time
+    reg.dpWrite(pp.bcr_addr, 0);
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+
+    // Setup ECR
+    const buf_type: u32 = if (phe != 0)
+        (reg.EP_CTRL_INT_PER_BUFFER)
+    else
+        (reg.EP_CTRL_DOUBLE_BUFFERED | reg.EP_CTRL_INT_PER_DOUBLE_BUFFER);
+
+    const ecr = reg.EP_CTRL_ENABLE | buf_type | (@as(u32, pp.transfer_type) << reg.EP_CTRL_BUFFER_TYPE_LSB) | (@as(u32, @max(pp.interval, 1) - 1) << reg.EP_CTRL_HOST_INT_INTERVAL_LSB) | (pp.buf_addr & 0xFC0);
+    reg.dpWrite(pp.ecr_addr, ecr);
+
+    pp.data_pid = 0;
+
+    // Piccolo Xpress quirk: starts with DATA1 (same as picousb)
+    if (pp.dev_addr != 0) {
+        const dev = getDevice(pp.dev_addr);
+        if (dev.vid == 0x0403 and dev.pid == 0xCD18) {
+            pp.data_pid = 1;
         }
     }
-    return null;
+
+    pp.status = .configured;
 }
 
-pub fn allocEp0(dev_addr: u8, maxsize: u8) ?*Endpoint {
-    for (endpoints[1..]) |*ep| {
-        if (!ep.configured) {
-            ep.* = .{
-                .dev_addr = dev_addr,
-                .ep_addr = 0,
-                .ep_type = desc.TRANSFER_CONTROL,
-                .maxsize = maxsize,
-                .configured = true,
-                .user_buf = &ctrl_buf,
-            };
-            return ep;
+fn setupCtrl() void {
+    setupPipe(ctrl(), 0, 0, desc.TRANSFER_CONTROL, 0, 0, &ctrl_buf);
+}
+
+fn getPipe(dev_addr: u8, ep_num: u8) *Pipe {
+    for (&pipes) |*pp| {
+        if (pp.status != .unconfigured) {
+            if (pp.dev_addr == dev_addr and pp.ep_num == @as(u4, @intCast(ep_num & 0x0F)))
+                return pp;
         }
     }
-    return null;
+    @panic("No configured pipe for this endpoint");
 }
 
-// ── Device management ──────────────────────────────────────────────────
-
-pub fn getDevice(addr: u8) ?*Device {
-    if (addr < MAX_DEVICES) return &devices[addr];
-    return null;
-}
-
-pub fn nextDevAddr() ?u8 {
-    for (1..MAX_DEVICES) |i| {
-        if (devices[i].state == .disconnected) {
-            devices[i].state = .allocated;
-            return @intCast(i);
+fn nextPipe(dev_addr: u8, epd: *const desc.EndpointDescriptor, user_buf: ?[*]u8) *Pipe {
+    if ((epd.bEndpointAddress & 0x0F) == 0) @panic("EP0 cannot be requested");
+    for (pipes[1..], 1..) |*pp, i| {
+        if (pp.status == .unconfigured) {
+            pp.dev_addr = dev_addr;
+            setupPipe(pp, @intCast(i), epd.bEndpointAddress, epd.bmAttributes, epd.wMaxPacketSize, epd.bInterval, user_buf orelse &ctrl_buf);
+            return pp;
         }
     }
-    return null;
+    @panic("No free pipes remaining");
 }
 
-// ── Buffer management (EPX-only) ───────────────────────────────────────
+// ── Buffer management ──────────────────────────────────────────────────
 
-fn readBuffer(ep: *Endpoint, buf_id: u1, bcr: u32) u16 {
-    const is_in = ep.isIn();
-    const is_full = bcr & reg.BUF_CTRL_FULL != 0;
+fn startBuffer(pp: *Pipe, buf_id: u1) u16 {
+    const is_in = pp.ep_in;
+    const has_more = pp.bytes_left > pp.maxsize;
+    const pid = pp.data_pid;
+    const len: u16 = @min(pp.bytes_left, pp.maxsize);
+
+    var bcr: u16 = 0;
+    if (!is_in) bcr |= @as(u16, @truncate(reg.BUF_CTRL_FULL));
+    if (!has_more) bcr |= @as(u16, @truncate(reg.BUF_CTRL_LAST));
+    if (pid == 1) bcr |= @as(u16, @truncate(reg.BUF_CTRL_DATA1_PID));
+    bcr |= len;
+
+    pp.data_pid = pid ^ 1;
+
+    // OUT: copy from user buffer to DPSRAM
+    if (!is_in and len > 0) {
+        const dst = pp.buf_addr + @as(u32, buf_id) * 64;
+        reg.dpMemcpy(dst, pp.user_buf + pp.bytes_done, len);
+        pp.bytes_done += len;
+    }
+
+    pp.bytes_left -= len;
+    return bcr;
+}
+
+fn finishBuffer(pp: *Pipe, buf_id: u1, bcr: u32) u16 {
+    const is_in = pp.ep_in;
     const len: u16 = @intCast(bcr & reg.BUF_CTRL_LEN_MASK);
 
-    // Sanity: IN buffers should be full, OUT buffers should be empty
-    _ = is_full;
-
-    // Copy inbound data from DPSRAM to user buffer
+    // IN: copy from DPSRAM to user buffer
     if (is_in and len > 0) {
-        const src = reg.epxDataBuf(buf_id);
-        reg.dpMemcpyFrom(ep.user_buf + ep.bytes_done, src, len);
-        ep.bytes_done += len;
+        const src = pp.buf_addr + @as(u32, buf_id) * 64;
+        reg.dpMemcpyFrom(pp.user_buf + pp.bytes_done, src, len);
+        pp.bytes_done += len;
     }
 
-    // Short packet means transfer is done
-    if (len < ep.maxsize) {
-        ep.bytes_left = 0;
-    }
+    if (len < pp.maxsize)
+        pp.bytes_left = 0;
 
     return len;
 }
 
-fn prepBuffer(ep: *Endpoint, buf_id: u1) u16 {
-    const is_in = ep.isIn();
-    const has_more = ep.bytes_left > ep.maxsize;
-    const pid = ep.data_pid;
-    const len: u16 = @min(ep.maxsize, ep.bytes_left);
+// ── Transactions ───────────────────────────────────────────────────────
 
-    var bcr: u16 = 0;
-    if (!is_in) bcr |= @as(u16, @truncate(reg.BUF_CTRL_FULL)); // OUT = full
-    if (!has_more) bcr |= @as(u16, @truncate(reg.BUF_CTRL_LAST)); // last packet
-    if (pid == 1) bcr |= @as(u16, @truncate(reg.BUF_CTRL_DATA1_PID));
-    bcr |= @as(u16, @truncate(reg.BUF_CTRL_AVAIL));
-    bcr |= len;
-
-    // Toggle PID
-    ep.data_pid = pid ^ 1;
-
-    // Copy outbound data from user buffer to DPSRAM
-    if (!is_in and len > 0) {
-        const dst = reg.epxDataBuf(buf_id);
-        reg.dpMemcpy(dst, ep.user_buf + ep.bytes_done, len);
-        ep.bytes_done += len;
-    }
-
-    ep.bytes_left -= len;
-    return bcr;
+fn startTransactionCb(arg: *anyopaque) void {
+    const pp: *Pipe = @ptrCast(@alignCast(arg));
+    startTransaction(pp);
 }
 
-fn sendBuffers(ep: *Endpoint) void {
-    var ecr = reg.dpRead(reg.EPX_CTRL);
-    var bcr: u32 = prepBuffer(ep, 0);
+fn startTransaction(pp: *Pipe) void {
+    var hold: u32 = startBuffer(pp, 0);
+    var fire: u32 = reg.BUF_CTRL_AVAIL;
 
-    // Double buffer if there's more data after this packet
-    if (bcr & reg.BUF_CTRL_LAST == 0) {
-        ecr |= reg.EP_CTRL_DOUBLE_BUFFERED;
-        bcr |= @as(u32, prepBuffer(ep, 1)) << 16;
-    } else {
-        ecr &= ~reg.EP_CTRL_DOUBLE_BUFFERED;
+    // Double/single buffer mode for epx
+    if (pp.ecr_addr == ctrl().ecr_addr) {
+        if (hold & reg.BUF_CTRL_LAST != 0) {
+            // Single buffer
+            var ecr = reg.dpRead(pp.ecr_addr);
+            ecr &= ~(reg.EP_CTRL_DOUBLE_BUFFERED | reg.EP_CTRL_INT_PER_DOUBLE_BUFFER);
+            ecr |= reg.EP_CTRL_INT_PER_BUFFER;
+            reg.dpWrite(pp.ecr_addr, ecr);
+        } else {
+            // Double buffer
+            hold |= @as(u32, startBuffer(pp, 1)) << 16;
+            var ecr = reg.dpRead(pp.ecr_addr);
+            ecr &= ~reg.EP_CTRL_INT_PER_BUFFER;
+            ecr |= reg.EP_CTRL_DOUBLE_BUFFERED | reg.EP_CTRL_INT_PER_DOUBLE_BUFFER;
+            reg.dpWrite(pp.ecr_addr, ecr);
+            fire |= fire << 16;
+        }
     }
 
-    // Write BCR first (masked), then ECR, then unmask BCR
-    reg.dpWrite(reg.EPX_BUF_CTRL, bcr & reg.UNAVAILABLE_MASK);
-    reg.dpWrite(reg.EPX_CTRL, ecr);
+    // Write BCR with settling nops
+    reg.dpWrite(pp.bcr_addr, hold);
     asm volatile ("nop");
     asm volatile ("nop");
-    reg.dpWrite(reg.EPX_BUF_CTRL, bcr);
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+
+    // Fire
+    reg.dpWrite(pp.bcr_addr, hold | fire);
 }
 
-fn handleBuffers(ep: *Endpoint) void {
-    if (!ep.active) return;
-
-    const ecr = reg.dpRead(reg.EPX_CTRL);
-    var bcr = reg.dpRead(reg.EPX_BUF_CTRL);
+fn finishTransaction(pp: *Pipe) void {
+    const ecr = reg.dpRead(pp.ecr_addr);
+    const bcr = reg.dpRead(pp.bcr_addr);
 
     if (ecr & reg.EP_CTRL_DOUBLE_BUFFERED != 0) {
-        if (readBuffer(ep, 0, bcr) == ep.maxsize)
-            _ = readBuffer(ep, 1, bcr >> 16);
+        if (finishBuffer(pp, 0, bcr) == pp.maxsize)
+            _ = finishBuffer(pp, 1, bcr >> 16);
     } else {
-        // RP2040-E4 workaround
         const bch = reg.read(reg.BUFF_CPU_SHOULD_HANDLE);
-        if (bch & 1 != 0) bcr >>= 16;
-        _ = readBuffer(ep, 0, bcr);
+        var tmp = bcr;
+        if (bch & 1 != 0) tmp >>= 16;
+        _ = finishBuffer(pp, 0, tmp);
     }
-
-    // Send next buffers if there's more data
-    if (ep.bytes_left > 0) sendBuffers(ep);
 }
 
 // ── Transfers ──────────────────────────────────────────────────────────
 
-pub fn transfer(ep: *Endpoint) void {
-    var is_in = ep.isIn();
-    const is_setup = ep.setup and ep.bytes_done == 0;
+fn startTransfer(pp: *Pipe) void {
+    pp.status = .started;
 
-    // No data phase → flip direction (status stage)
-    if (ep.bytes_left == 0) {
-        is_in = !is_in;
-        ep.ep_addr ^= desc.DIR_IN;
+    const dar: u32 = @as(u32, pp.ep_num) << 16 | pp.dev_addr;
+    var sie: u32 = reg.SIE_CTRL_HOST_BASE;
+
+    // Shared epx needs per-transfer SIE setup
+    if (pp.ecr_addr == ctrl().ecr_addr) {
+        const is_in = pp.ep_in;
+        const is_setup_start = pp.setup and pp.bytes_done == 0;
+
+        if (is_in) {
+            sie |= reg.SIE_CTRL_RECEIVE_DATA;
+        } else {
+            sie |= reg.SIE_CTRL_SEND_DATA;
+        }
+        if (is_setup_start) {
+            sie |= reg.SIE_CTRL_SEND_SETUP;
+        }
     }
 
-    // Build the device address register value
-    const dar: u32 = @as(u32, ep.dev_addr) | (@as(u32, ep.num()) << reg.ADDR_ENDP_ENDPOINT_LSB);
-
-    // Build SIE_CTRL
-    var scr: u32 = reg.SIE_CTRL_HOST_BASE;
-    if (is_setup) scr |= reg.SIE_CTRL_SEND_SETUP;
-    if (is_in) {
-        scr |= reg.SIE_CTRL_RECEIVE_DATA;
-    } else {
-        scr |= reg.SIE_CTRL_SEND_DATA;
-    }
-    scr |= reg.SIE_CTRL_START_TRANS;
-
-    ep.active = true;
-
-    // Program the hardware (order matters)
     reg.write(reg.ADDR_ENDP, dar);
-    reg.write(reg.SIE_CTRL, scr & ~reg.SIE_CTRL_START_TRANS);
-    sendBuffers(ep);
-    reg.write(reg.SIE_CTRL, scr);
+    reg.write(reg.SIE_CTRL, sie);
+
+    startTransaction(pp);
+
+    // Fire
+    reg.write(reg.SIE_CTRL, sie | reg.SIE_CTRL_START_TRANS);
 }
 
-pub fn transferZlp(ep: *Endpoint) void {
-    ep.data_pid = 1;
-    transfer(ep);
+fn finishTransfer(pp: *Pipe) void {
+    const task = Task{
+        .task_type = .transfer,
+        .transfer = .{
+            .status = 0,
+            .dev_addr = pp.dev_addr,
+            .ep_num = pp.ep_num,
+            .user_buf = pp.user_buf,
+            .len = pp.bytes_done,
+        },
+        .cb = pp.cb,
+        .cb_arg = pp.cb_arg,
+        .xfer_cb = pp.xfer_cb,
+        .xfer_ctx = pp.xfer_ctx,
+    };
+
+    pp.resetState();
+
+    // Control transfer callbacks are one-shot
+    if (pp.ep_num == 0 and pp.cb != null) {
+        pp.cb = null;
+        pp.cb_arg = null;
+    }
+
+    taskEnqueue(task);
 }
 
-pub fn controlTransfer(ep: *Endpoint, setup: *const desc.SetupPacket) void {
-    // Write the setup packet to DPSRAM
+pub fn transferZlp(arg: *anyopaque) void {
+    const pp: *Pipe = @ptrCast(@alignCast(arg));
+
+    pp.bytes_left = 0;
+
+    // ZLP for control transfers flips direction and uses DATA1
+    if (pp.transfer_type == 0) {
+        pp.ep_in = !pp.ep_in;
+        pp.data_pid = 1;
+    }
+
+    startTransfer(pp);
+}
+
+fn awaitTransfer(pp: *Pipe) void {
+    while (pp.status != .finished) {
+        processTask();
+    }
+}
+
+pub fn controlTransfer(dev: *Device, setup: *const desc.SetupPacket) void {
+    const pp = ctrl();
+
+    // Copy setup packet to DPSRAM
     const src: [*]const u8 = @ptrCast(setup);
     reg.dpMemcpy(reg.SETUP_PACKET, src, 8);
 
-    ep.setup = true;
-    ep.data_pid = 1;
-    ep.ep_addr = if (setup.bmRequestType & desc.DIR_IN != 0) desc.DIR_IN else 0;
-    ep.bytes_left = setup.wLength;
-    ep.bytes_done = 0;
-    transfer(ep);
+    pp.dev_addr = dev.dev_addr;
+    pp.ep_num = 0;
+    pp.ep_in = (setup.bmRequestType & desc.DIR_IN) != 0;
+    pp.maxsize = if (dev.maxsize0 > 0) dev.maxsize0 else 8;
+    pp.setup = true;
+    pp.data_pid = 1; // SETUP uses DATA0, next packet DATA1
+    pp.user_buf = &ctrl_buf;
+    pp.bytes_left = setup.wLength;
+    pp.bytes_done = 0;
+
+    // No data phase → flip direction
+    if (pp.bytes_left == 0) pp.ep_in = !pp.ep_in;
+
+    startTransfer(pp);
 }
 
-// ── High-level transfer helpers ────────────────────────────────────────
+pub fn command(dev: *Device, bmRequestType: u8, bRequest: u8, wValue: u16, wIndex: u16, wLength: u16) void {
+    controlTransfer(dev, &.{
+        .bmRequestType = bmRequestType,
+        .bRequest = bRequest,
+        .wValue = wValue,
+        .wIndex = wIndex,
+        .wLength = wLength,
+    });
+    awaitTransfer(ctrl());
+}
 
-pub fn getDescriptor(ep: *Endpoint, dtype: u8, index: u8, len: u8) void {
-    controlTransfer(ep, &.{
+pub fn bulkTransfer(pp: *Pipe, ptr: [*]u8, len: u16) void {
+    pp.user_buf = ptr;
+    pp.bytes_left = len;
+    pp.bytes_done = 0;
+    startTransfer(pp);
+}
+
+pub fn bulkTransferAsync(pp: *Pipe, ptr: [*]u8, len: u16, cb: TransferCallback, ctx: ?*anyopaque) void {
+    pp.xfer_cb = cb;
+    pp.xfer_ctx = ctx;
+    pp.user_buf = ptr;
+    pp.bytes_left = len;
+    pp.bytes_done = 0;
+    startTransfer(pp);
+}
+
+// ── Descriptors ────────────────────────────────────────────────────────
+
+fn getDescriptor(dev: *Device, dtype: u8, len: u8) void {
+    controlTransfer(dev, &.{
         .bmRequestType = desc.DIR_IN | desc.REQ_TYPE_STANDARD | desc.REQ_RECIPIENT_DEVICE,
         .bRequest = desc.REQUEST_GET_DESCRIPTOR,
-        .wValue = desc.makeU16(dtype, index),
+        .wValue = desc.makeU16(dtype, 0),
         .wIndex = 0,
         .wLength = len,
     });
 }
 
-pub fn setAddress(ep: *Endpoint, addr: u8) void {
-    controlTransfer(ep, &.{
+fn getDeviceDescriptor(dev: *Device) void {
+    var len: u8 = @sizeOf(desc.DeviceDescriptor);
+    if (dev.maxsize0 == 0) {
+        dev.maxsize0 = 8; // Default per USB 2.0 spec
+        len = 8;
+    }
+    getDescriptor(dev, desc.DT_DEVICE, len);
+}
+
+fn getConfigDescriptor(dev: *Device, len: u8) void {
+    getDescriptor(dev, desc.DT_CONFIG, len);
+}
+
+fn loadDeviceDescriptor(dev: *Device) void {
+    const d = desc.cast(desc.DeviceDescriptor, &ctrl_buf);
+    dev.class = d.bDeviceClass;
+    dev.subclass = d.bDeviceSubClass;
+    dev.protocol = d.bDeviceProtocol;
+    dev.vid = d.idVendor;
+    dev.pid = d.idProduct;
+    dev.version = d.bcdDevice;
+    dev.i_manufacturer = d.iManufacturer;
+    dev.i_product = d.iProduct;
+    dev.i_serial = d.iSerialNumber;
+}
+
+fn setDeviceAddress(dev: *Device) void {
+    controlTransfer(dev0(), &.{
         .bmRequestType = desc.DIR_OUT | desc.REQ_TYPE_STANDARD | desc.REQ_RECIPIENT_DEVICE,
         .bRequest = desc.REQUEST_SET_ADDRESS,
-        .wValue = addr,
+        .wValue = dev.dev_addr,
         .wIndex = 0,
         .wLength = 0,
     });
 }
 
-pub fn setConfiguration(ep: *Endpoint, config: u16) void {
-    controlTransfer(ep, &.{
+fn setConfiguration(dev: *Device, cfg: u16) void {
+    controlTransfer(dev, &.{
         .bmRequestType = desc.DIR_OUT | desc.REQ_TYPE_STANDARD | desc.REQ_RECIPIENT_DEVICE,
         .bRequest = desc.REQUEST_SET_CONFIGURATION,
-        .wValue = config,
+        .wValue = cfg,
         .wIndex = 0,
         .wLength = 0,
     });
 }
 
-pub fn getStringDescriptor(ep: *Endpoint, index: u8) void {
-    controlTransfer(ep, &.{
-        .bmRequestType = desc.DIR_IN | desc.REQ_TYPE_STANDARD | desc.REQ_RECIPIENT_DEVICE,
-        .bRequest = desc.REQUEST_GET_DESCRIPTOR,
-        .wValue = desc.makeU16(desc.DT_STRING, index),
-        .wIndex = 0,
-        .wLength = CTRL_BUF_SIZE,
-    });
+fn showDeviceInfo(dev: *Device) void {
+    console.puts("[usb] VID=0x");
+    printHex16(dev.vid);
+    console.puts(" PID=0x");
+    printHex16(dev.pid);
+    console.puts(" class=");
+    printU8(dev.class);
+    console.puts("\n");
 }
 
-// ── Bulk transfers (EPX-only) ──────────────────────────────────────────
+// ── Enumeration state machine ──────────────────────────────────────────
 
-pub fn bulkIn(ep: *Endpoint, buf: [*]u8, len: u16) void {
-    ep.ep_addr |= desc.DIR_IN;
-    ep.user_buf = buf;
-    ep.bytes_left = len;
-    ep.bytes_done = 0;
-    ep.setup = false;
-    transfer(ep);
+const EnumStep = enum(u8) {
+    start,
+    get_maxsize,
+    set_address,
+    get_device,
+    get_config_short,
+    get_config_full,
+    set_config,
+    finish,
+};
+
+var enum_step: EnumStep = .start;
+var enum_new_addr: u8 = 0;
+
+fn resetEnumState() void {
+    enum_step = .start;
+    enum_new_addr = 0;
 }
 
-pub fn bulkOut(ep: *Endpoint, buf: [*]const u8, len: u16) void {
-    ep.ep_addr &= ~desc.DIR_IN;
-    ep.user_buf = @constCast(buf);
-    ep.bytes_left = len;
-    ep.bytes_done = 0;
-    ep.setup = false;
-    transfer(ep);
+fn enumerate(arg: *anyopaque) void {
+    const dev: *Device = @ptrCast(@alignCast(arg));
+
+    if (dev.maxsize0 == 0)
+        enum_step = .start;
+
+    switch (enum_step) {
+        .start => {
+            console.puts("[usb] enumeration started\n");
+            enum_step = .get_maxsize;
+            getDeviceDescriptor(dev);
+        },
+
+        .get_maxsize => {
+            enum_step = .set_address;
+            // Extract maxsize from partial device descriptor
+            const d = desc.cast(desc.DeviceDescriptor, &ctrl_buf);
+            const new_dev = nextDevice();
+            new_dev.state = dev0().state;
+            new_dev.speed = dev0().speed;
+            new_dev.maxsize0 = d.bMaxPacketSize0;
+            enum_new_addr = new_dev.dev_addr;
+
+            console.puts("[usb] SET_ADDRESS -> ");
+            printU8(enum_new_addr);
+            console.puts("\n");
+            setDeviceAddress(new_dev);
+        },
+
+        .set_address => {
+            enum_step = .get_device;
+            const new_dev = getDevice(enum_new_addr);
+            new_dev.state = .addressed;
+            clearDevice(0);
+
+            console.puts("[usb] GET_DEVICE_DESCRIPTOR (full)\n");
+            getDeviceDescriptor(new_dev);
+        },
+
+        .get_device => {
+            enum_step = .get_config_short;
+            loadDeviceDescriptor(dev);
+            showDeviceInfo(dev);
+
+            console.puts("[usb] GET_CONFIG_DESCRIPTOR (short)\n");
+            getConfigDescriptor(dev, 9);
+        },
+
+        .get_config_short => {
+            enum_step = .get_config_full;
+            const cd = desc.cast(desc.ConfigDescriptor, &ctrl_buf);
+            const total_len = cd.wTotalLength;
+            if (total_len > MAX_CTRL_BUF)
+                @panic("Configuration descriptor too large");
+
+            console.puts("[usb] GET_CONFIG_DESCRIPTOR (full, ");
+            printU16(total_len);
+            console.puts(" bytes)\n");
+            getConfigDescriptor(dev, @intCast(total_len));
+        },
+
+        .get_config_full => {
+            enum_step = .set_config;
+            enumerateDescriptors(dev);
+            dev.state = .enumerated;
+
+            console.puts("[usb] SET_CONFIGURATION\n");
+            setConfiguration(dev, 1);
+        },
+
+        .set_config => {
+            enum_step = .finish;
+            dev.state = .configured;
+            console.puts("[usb] device configured!\n");
+            showDeviceInfo(dev);
+            onDeviceConfigured(dev);
+        },
+
+        .finish => {},
+    }
+}
+
+fn enumerateDescriptors(dev: *Device) void {
+    var cur: usize = 0;
+    const cd = desc.cast(desc.ConfigDescriptor, &ctrl_buf);
+    const end: usize = cd.wTotalLength;
+
+    while (cur + 2 <= end) {
+        const dlen: usize = ctrl_buf[cur];
+        const dtype = ctrl_buf[cur + 1];
+
+        if (dlen == 0) break;
+        if (cur + dlen > end) break;
+
+        switch (dtype) {
+            desc.DT_CONFIG => {
+                console.puts("[usb]   config descriptor\n");
+            },
+            desc.DT_INTERFACE => {
+                if (dlen >= 9) {
+                    const ifd = desc.cast(desc.InterfaceDescriptor, ctrl_buf[cur..]);
+                    console.puts("[usb]   interface ");
+                    printU8(ifd.bInterfaceNumber);
+                    console.puts(" class=0x");
+                    printHex8(ifd.bInterfaceClass);
+                    console.puts(" sub=0x");
+                    printHex8(ifd.bInterfaceSubClass);
+                    console.puts("\n");
+                }
+            },
+            desc.DT_ENDPOINT => {
+                if (dlen >= 7) {
+                    const epd: *const desc.EndpointDescriptor = @ptrCast(@alignCast(&ctrl_buf[cur]));
+                    console.puts("[usb]   endpoint EP");
+                    printU8(epd.bEndpointAddress & 0x0F);
+                    if (epd.bEndpointAddress & 0x80 != 0) {
+                        console.puts(" IN");
+                    } else {
+                        console.puts(" OUT");
+                    }
+                    console.puts(" maxsize=");
+                    printU16(epd.wMaxPacketSize);
+                    console.puts("\n");
+                    _ = nextPipe(dev.dev_addr, epd, null);
+                }
+            },
+            else => {},
+        }
+
+        cur += dlen;
+    }
+}
+
+// ── Device callbacks ───────────────────────────────────────────────────
+
+fn onDeviceConfigured(dev: *Device) void {
+    console.puts("[usb] device ");
+    printU8(dev.dev_addr);
+    console.puts(" ready (VID=0x");
+    printHex16(dev.vid);
+    console.puts(" PID=0x");
+    printHex16(dev.pid);
+    console.puts(")\n");
+    dev.state = .ready;
+
+    const ftdi = @import("ftdi.zig");
+    ftdi.ftdiSetup(dev);
+}
+
+// ── Bus reset ──────────────────────────────────────────────────────────
+
+fn busReset() void {
+    console.puts("[usb] bus reset...\n");
+
+    // Disable NVIC USB IRQ during bus reset to prevent spurious connect/disconnect
+    nvicDisable();
+
+    // Mask HOST_CONN_DIS during reset
+    var inte = reg.read(reg.INTE);
+    inte &= ~reg.INT_HOST_CONN_DIS;
+    reg.write(reg.INTE, inte);
+
+    // Assert SE0 (bus reset)
+    reg.set(reg.SIE_CTRL, reg.SIE_CTRL_RESET_BUS);
+
+    // 50ms bus reset per USB spec
+    hal.delayMs(50);
+
+    // Deassert bus reset
+    reg.clr(reg.SIE_CTRL, reg.SIE_CTRL_RESET_BUS);
+
+    // Recovery time after bus reset
+    hal.delayMs(10);
+
+    // Clear all SIE_STATUS and BUFF_STATUS (W1C: write 1s to clear)
+    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
+    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
+
+    // Flush task queue
+    tq_head = 0;
+    tq_tail = 0;
+    tq_count = 0;
+
+    // Re-enable HOST_CONN_DIS interrupt
+    inte = reg.read(reg.INTE);
+    inte |= reg.INT_HOST_CONN_DIS;
+    reg.write(reg.INTE, inte);
+
+    // Clear NVIC pending and re-enable
+    nvicClearPending();
+    nvicEnable();
+
+    console.puts("[usb] bus reset complete\n");
 }
 
 // ── ISR ────────────────────────────────────────────────────────────────
@@ -552,104 +852,225 @@ pub fn isr() void {
     // Connection / disconnection
     if (ints & reg.INT_HOST_CONN_DIS != 0) {
         ints &= ~reg.INT_HOST_CONN_DIS;
+
+        // Capture speed BEFORE clearing (W1C erases speed bits)
         const speed_bits = (reg.read(reg.SIE_STATUS) & reg.SIE_STATUS_SPEED_BITS) >> reg.SIE_STATUS_SPEED_LSB;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_SPEED_BITS);
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_SPEED_BITS);
 
         const speed: Speed = @enumFromInt(@as(u2, @truncate(speed_bits)));
         if (speed != .disconnected) {
-            enqueueEvent(.{ .kind = .connect, .speed = speed });
+            taskEnqueue(.{
+                .task_type = .connect,
+                .connect = .{ .speed = speed },
+                .cb = &enumerate,
+                .cb_arg = @ptrCast(dev0()),
+            });
         } else {
-            enqueueEvent(.{ .kind = .disconnect });
+            clearDevice(0);
+            clearAllPipes();
+            setupCtrl();
+            resetEnumState();
         }
     }
 
     // Stall
     if (ints & reg.INT_STALL != 0) {
         ints &= ~reg.INT_STALL;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_STALL_REC);
-        enqueueEvent(.{ .kind = .stall });
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_STALL_REC);
+        console.puts("[usb] ISR: stall\n");
     }
 
     // Buffer ready
     if (ints & reg.INT_BUFF_STATUS != 0) {
         ints &= ~reg.INT_BUFF_STATUS;
-        const ep = epx();
-        handleBuffers(ep);
-        reg.write(reg.BUFF_STATUS, 0xFFFFFFFF); // clear all
+
+        var bits = reg.read(reg.BUFF_STATUS);
+        var mask: u32 = 0b11;
+
+        var pipe_idx: u8 = 0;
+        while (pipe_idx < MAX_PIPES and bits != 0) : ({
+            pipe_idx += 1;
+            mask <<= 2;
+        }) {
+            if (bits & mask != 0) {
+                bits &= ~mask;
+                reg.write(reg.BUFF_STATUS, mask);
+
+                const pp = &pipes[pipe_idx];
+                finishTransaction(pp);
+
+                if (pp.bytes_left > 0) {
+                    queueCallback(&startTransactionCb, @ptrCast(pp));
+                } else {
+                    finishTransfer(pp);
+                }
+            }
+        }
     }
 
     // Transfer complete
     if (ints & reg.INT_TRANS_COMPLETE != 0) {
         ints &= ~reg.INT_TRANS_COMPLETE;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_TRANS_COMPLETE);
-
-        const ep = epx();
-        if (ep.active) {
-            const len = ep.bytes_done;
-            ep.clear();
-            enqueueEvent(.{ .kind = .transfer_complete, .transfer_len = len });
-        }
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_TRANS_COMPLETE);
     }
 
     // Receive timeout
     if (ints & reg.INT_ERROR_RX_TIMEOUT != 0) {
         ints &= ~reg.INT_ERROR_RX_TIMEOUT;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_RX_TIMEOUT);
-        enqueueEvent(.{ .kind = .error_timeout });
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_RX_TIMEOUT);
     }
 
     // Data sequence error
     if (ints & reg.INT_ERROR_DATA_SEQ != 0) {
         ints &= ~reg.INT_ERROR_DATA_SEQ;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_DATA_SEQ_ERROR);
-        enqueueEvent(.{ .kind = .error_data_seq });
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_DATA_SEQ_ERROR);
     }
 
     // Device resume
     if (ints & reg.INT_HOST_RESUME != 0) {
         ints &= ~reg.INT_HOST_RESUME;
-        reg.clr(reg.SIE_STATUS, reg.SIE_STATUS_RESUME);
+        reg.write(reg.SIE_STATUS, reg.SIE_STATUS_RESUME);
     }
 }
 
-// ── Event processing (called from event loop) ──────────────────────────
+// ── Task processing (called from event loop) ───────────────────────────
 
-pub fn poll() void {
-    while (dequeueEvent()) |ev| {
-        switch (ev.kind) {
+fn processTask() void {
+    if (taskDequeue()) |task| {
+        switch (task.task_type) {
+            .callback => {},
+
             .connect => {
-                console.puts("[usb] device connected\n");
-                dev0().state = .enumerating;
-                dev0().speed = ev.speed;
-                if (on_connect) |cb| cb(ev.speed);
+                clearDevice(0);
+                clearAllPipes();
+                setupCtrl();
+                resetEnumState();
+                const d = dev0();
+                d.state = .detected;
+                d.speed = task.connect.speed;
+
+                const label: []const u8 = switch (task.connect.speed) {
+                    .low => "low",
+                    .full => "full",
+                    .disconnected => "???",
+                };
+                console.puts("[usb] device connected (");
+                console.puts(label);
+                console.puts(" speed)\n");
+
+                // Bus reset after connect
+                busReset();
             },
-            .disconnect => {
-                console.puts("[usb] device disconnected\n");
-                for (&devices) |*d| d.reset();
-                for (&endpoints) |*ep| ep.* = .{};
-                setupEpx(8);
-                if (on_disconnect) |cb| cb();
+
+            .transfer => {
+                const dev = getDevice(task.transfer.dev_addr);
+                const pp = getPipe(task.transfer.dev_addr, task.transfer.ep_num);
+
+                if (@intFromEnum(dev.state) < @intFromEnum(DeviceState.configured)) {
+                    if (task.transfer.len > 0) {
+                        transferZlp(@ptrCast(pp));
+                    } else {
+                        enumerate(@ptrCast(dev));
+                    }
+                } else if (task.xfer_cb) |xcb| {
+                    const result = TransferResult{
+                        .dev_addr = task.transfer.dev_addr,
+                        .ep_num = task.transfer.ep_num,
+                        .dir_in = pp.ep_in,
+                        .user_buf = task.transfer.user_buf orelse undefined,
+                        .len = task.transfer.len,
+                        .status = task.transfer.status,
+                    };
+                    xcb(task.xfer_ctx, &result);
+                }
             },
-            .transfer_complete => {
-                if (on_transfer_done) |cb| cb(epx(), ev.transfer_len);
-            },
-            .stall => {
-                console.puts("[usb] stall detected\n");
-            },
-            .error_timeout => {
-                console.puts("[usb] rx timeout\n");
-            },
-            .error_data_seq => {
-                console.puts("[usb] data sequence error\n");
-            },
+        }
+
+        // Invoke optional legacy callback (used by enumeration connect path)
+        if (task.cb) |cb| {
+            cb(task.cb_arg orelse @ptrCast(dev0()));
         }
     }
 }
 
+// ── Init ───────────────────────────────────────────────────────────────
+
+pub fn init() void {
+    console.puts("[usb] host init\n");
+
+    nvicDisable();
+    nvicClearPending();
+
+    // Reset USB controller
+    const RESETS_USBCTRL: u32 = 1 << 24;
+    hal.regSet(hal.platform.RESETS_BASE, RESETS_USBCTRL);
+    hal.regClr(hal.platform.RESETS_BASE, RESETS_USBCTRL);
+    while ((hal.regRead(hal.platform.RESETS_BASE + 0x08) & RESETS_USBCTRL) == 0) {}
+
+    // Clear DPSRAM
+    reg.dpMemset(reg.DPSRAM_BASE, 0, 4096);
+
+    // Disable everything first
+    reg.write(reg.INTE, 0);
+    reg.write(reg.MAIN_CTRL, 0);
+    reg.write(reg.SIE_CTRL, 0);
+    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
+    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
+
+    // Configure as USB host
+    reg.write(reg.USB_MUXING, reg.MUXING_TO_PHY | reg.MUXING_SOFTCON);
+    reg.write(reg.USB_PWR, reg.PWR_HOST_MODE);
+    reg.write(reg.MAIN_CTRL, reg.MAIN_CTRL_CONTROLLER_EN | reg.MAIN_CTRL_HOST_NDEVICE);
+    reg.write(reg.SIE_CTRL, reg.SIE_CTRL_HOST_BASE);
+
+    // Clear state
+    clearAllDevices();
+    clearAllPipes();
+    setupCtrl();
+
+    // Clear status one more time
+    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
+    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
+
+    // Flush task queue BEFORE enabling interrupts (prevents ISR/main race)
+    tq_head = 0;
+    tq_tail = 0;
+    tq_count = 0;
+
+    // Enable interrupts
+    reg.write(reg.INTE, reg.INT_HOST_CONN_DIS | reg.INT_STALL | reg.INT_BUFF_STATUS | reg.INT_TRANS_COMPLETE | reg.INT_HOST_RESUME | reg.INT_ERROR_DATA_SEQ | reg.INT_ERROR_RX_TIMEOUT);
+
+    nvicClearPending();
+    nvicEnable();
+
+    initialized = true;
+    console.puts("[usb] host ready — waiting for device\n");
+}
+
+pub fn deinit() void {
+    nvicDisable();
+    reg.write(reg.INTE, 0);
+    reg.write(reg.SIE_STATUS, 0xFFFFFFFF);
+    reg.write(reg.BUFF_STATUS, 0xFFFFFFFF);
+    nvicClearPending();
+    reg.write(reg.MAIN_CTRL, 0);
+    initialized = false;
+}
+
+// ── Poll (called from event loop) ──────────────────────────────────────
+
+pub fn poll() void {
+    processTask();
+}
+
 // ── Public accessors ───────────────────────────────────────────────────
 
-pub fn getEpx() *Endpoint {
-    return epx();
+pub fn getCtrl() *Pipe {
+    return ctrl();
+}
+
+pub fn findPipe(dev_addr: u8, ep_num: u8) *Pipe {
+    return getPipe(dev_addr, ep_num);
 }
 
 pub fn getCtrlBuf() []u8 {
@@ -658,4 +1079,53 @@ pub fn getCtrlBuf() []u8 {
 
 pub fn isReady() bool {
     return initialized;
+}
+
+pub fn getDev0() *Device {
+    return dev0();
+}
+
+// ── Formatting helpers ─────────────────────────────────────────────────
+
+fn printU8(val: u8) void {
+    var buf: [3]u8 = undefined;
+    var n: u8 = val;
+    var i: usize = buf.len;
+    if (n == 0) {
+        console.putc('0');
+        return;
+    }
+    while (n > 0) {
+        i -= 1;
+        buf[i] = (n % 10) + '0';
+        n /= 10;
+    }
+    console.puts(buf[i..]);
+}
+
+fn printU16(val: u16) void {
+    var buf: [5]u8 = undefined;
+    var n: u16 = val;
+    var i: usize = buf.len;
+    if (n == 0) {
+        console.putc('0');
+        return;
+    }
+    while (n > 0) {
+        i -= 1;
+        buf[i] = @intCast(n % 10 + '0');
+        n /= 10;
+    }
+    console.puts(buf[i..]);
+}
+
+fn printHex8(val: u8) void {
+    const hex = "0123456789ABCDEF";
+    console.putc(hex[val >> 4]);
+    console.putc(hex[val & 0x0F]);
+}
+
+fn printHex16(val: u16) void {
+    printHex8(@intCast(val >> 8));
+    printHex8(@intCast(val & 0xFF));
 }

@@ -1,5 +1,6 @@
 // RP2040 USB controller register definitions.
-// Derived from the RP2040 datasheet §4.1 and the pico-sdk hardware headers.
+// Audited line-by-line against pico-sdk hardware/regs/usb.h and
+// hardware/structs/usb_dpram.h (2024-04 version).
 //
 // Two memory regions:
 //   DPSRAM  0x5010_0000 .. 0x5010_0FFF  (4 KB, dual-port, 8/16/32-bit access)
@@ -13,6 +14,7 @@ pub const DPSRAM_BASE: u32 = 0x5010_0000;
 pub const USB_BASE: u32 = 0x5011_0000;
 
 // ── USB controller registers (0x5011_0000) ─────────────────────────────
+// Offsets verified against USB_*_OFFSET in pico-sdk hardware/regs/usb.h
 
 pub const ADDR_ENDP: u32 = USB_BASE + 0x00;
 pub const ADDR_ENDP1: u32 = USB_BASE + 0x04;
@@ -41,13 +43,14 @@ pub const INTF: u32 = USB_BASE + 0x94;
 pub const INTS: u32 = USB_BASE + 0x98;
 
 // ── DPSRAM layout (host mode, 0x5010_0000) ─────────────────────────────
+// Verified against usb_host_dpram_t in pico-sdk hardware/structs/usb_dpram.h
 
 pub const SETUP_PACKET: u32 = DPSRAM_BASE + 0x000; // 8 bytes
-pub const INT_EP_CTRL_BASE: u32 = DPSRAM_BASE + 0x008; // 15 × 4 bytes (8-byte stride)
+pub const INT_EP_CTRL_BASE: u32 = DPSRAM_BASE + 0x008; // 15 × 8 bytes (ctrl + spare)
 pub const EPX_BUF_CTRL: u32 = DPSRAM_BASE + 0x080;
-pub const INT_EP_BUF_CTRL_BASE: u32 = DPSRAM_BASE + 0x088; // 15 × 4 bytes (8-byte stride)
+pub const INT_EP_BUF_CTRL_BASE: u32 = DPSRAM_BASE + 0x088; // 15 × 8 bytes (ctrl + spare)
 pub const EPX_CTRL: u32 = DPSRAM_BASE + 0x100;
-pub const EPX_DATA: u32 = DPSRAM_BASE + 0x180; // Data buffers start here (64 bytes each)
+pub const EPX_DATA: u32 = DPSRAM_BASE + 0x180; // Data buffers start here
 
 pub inline fn intEpCtrl(i: u4) u32 {
     return INT_EP_CTRL_BASE + @as(u32, i) * 8;
@@ -62,82 +65,119 @@ pub inline fn epxDataBuf(buf_id: u1) u32 {
 }
 
 // ── MAIN_CTRL bits ─────────────────────────────────────────────────────
+// USB_MAIN_CTRL_*_BITS
 
-pub const MAIN_CTRL_CONTROLLER_EN: u32 = 1 << 0;
-pub const MAIN_CTRL_HOST_NDEVICE: u32 = 1 << 1;
-pub const MAIN_CTRL_SIM_TIMING: u32 = 1 << 31;
+pub const MAIN_CTRL_CONTROLLER_EN: u32 = 1 << 0; // 0x00000001
+pub const MAIN_CTRL_HOST_NDEVICE: u32 = 1 << 1; // 0x00000002
+pub const MAIN_CTRL_SIM_TIMING: u32 = 1 << 31; // 0x80000000
 
 // ── SIE_CTRL bits ──────────────────────────────────────────────────────
+// USB_SIE_CTRL_*_BITS — these were COMPLETELY wrong in the old code.
+// Every value below is verified against pico-sdk hardware/regs/usb.h.
 
-pub const SIE_CTRL_START_TRANS: u32 = 1 << 0;
-pub const SIE_CTRL_RESUME: u32 = 1 << 1;
-pub const SIE_CTRL_RESET_BUS: u32 = 1 << 2;
-pub const SIE_CTRL_PULLDOWN_EN: u32 = 1 << 15;
-pub const SIE_CTRL_PULLUP_EN: u32 = 1 << 16;
-pub const SIE_CTRL_PREAMBLE_EN: u32 = 1 << 6;
-pub const SIE_CTRL_SOF_EN: u32 = 1 << 3;
-pub const SIE_CTRL_KEEP_ALIVE_EN: u32 = 1 << 4;
-pub const SIE_CTRL_VBUS_EN: u32 = 1 << 5;
-pub const SIE_CTRL_RECEIVE_DATA: u32 = 1 << 10;
-pub const SIE_CTRL_SEND_DATA: u32 = 1 << 9;
-pub const SIE_CTRL_SEND_SETUP: u32 = 1 << 8;
-pub const SIE_CTRL_TRANSCEIVER_EN: u32 = 1 << 7;
+pub const SIE_CTRL_START_TRANS: u32 = 1 << 0; // 0x00000001
+pub const SIE_CTRL_SEND_SETUP: u32 = 1 << 1; // 0x00000002
+pub const SIE_CTRL_SEND_DATA: u32 = 1 << 2; // 0x00000004
+pub const SIE_CTRL_RECEIVE_DATA: u32 = 1 << 3; // 0x00000008
+pub const SIE_CTRL_STOP_TRANS: u32 = 1 << 4; // 0x00000010
+pub const SIE_CTRL_PREAMBLE_EN: u32 = 1 << 6; // 0x00000040
+pub const SIE_CTRL_SOF_SYNC: u32 = 1 << 8; // 0x00000100
+pub const SIE_CTRL_SOF_EN: u32 = 1 << 9; // 0x00000200
+pub const SIE_CTRL_KEEP_ALIVE_EN: u32 = 1 << 10; // 0x00000400
+pub const SIE_CTRL_VBUS_EN: u32 = 1 << 11; // 0x00000800
+pub const SIE_CTRL_RESUME: u32 = 1 << 12; // 0x00001000
+pub const SIE_CTRL_RESET_BUS: u32 = 1 << 13; // 0x00002000 (SC)
+pub const SIE_CTRL_PULLDOWN_EN: u32 = 1 << 15; // 0x00008000
+pub const SIE_CTRL_PULLUP_EN: u32 = 1 << 16; // 0x00010000
 
 pub const SIE_CTRL_HOST_BASE: u32 = SIE_CTRL_PULLDOWN_EN | SIE_CTRL_VBUS_EN | SIE_CTRL_KEEP_ALIVE_EN | SIE_CTRL_SOF_EN;
+// = 0x8000 | 0x800 | 0x400 | 0x200 = 0x8E00
 
 // ── SIE_STATUS bits ────────────────────────────────────────────────────
+// USB_SIE_STATUS_*_BITS
 
-pub const SIE_STATUS_SPEED_BITS: u32 = 0x3 << 8;
+pub const SIE_STATUS_VBUS_DETECTED: u32 = 1 << 0; // 0x00000001
+pub const SIE_STATUS_LINE_STATE_BITS: u32 = 0x3 << 2; // 0x0000000C
+pub const SIE_STATUS_SUSPENDED: u32 = 1 << 4; // 0x00000010
+pub const SIE_STATUS_SPEED_BITS: u32 = 0x3 << 8; // 0x00000300
 pub const SIE_STATUS_SPEED_LSB: u5 = 8;
-pub const SIE_STATUS_TRANS_COMPLETE: u32 = 1 << 18;
-pub const SIE_STATUS_STALL_REC: u32 = 1 << 29;
-pub const SIE_STATUS_RX_TIMEOUT: u32 = 1 << 27;
-pub const SIE_STATUS_DATA_SEQ_ERROR: u32 = 1 << 31;
-pub const SIE_STATUS_RESUME: u32 = 1 << 11;
-pub const SIE_STATUS_NAK_REC: u32 = 1 << 28;
+pub const SIE_STATUS_VBUS_OVER_CURR: u32 = 1 << 10; // 0x00000400
+pub const SIE_STATUS_RESUME: u32 = 1 << 11; // 0x00000800
+pub const SIE_STATUS_CONNECTED: u32 = 1 << 16; // 0x00010000
+pub const SIE_STATUS_SETUP_REC: u32 = 1 << 17; // 0x00020000
+pub const SIE_STATUS_TRANS_COMPLETE: u32 = 1 << 18; // 0x00040000
+pub const SIE_STATUS_BUS_RESET: u32 = 1 << 19; // 0x00080000
+pub const SIE_STATUS_CRC_ERROR: u32 = 1 << 24; // 0x01000000
+pub const SIE_STATUS_BIT_STUFF_ERROR: u32 = 1 << 25; // 0x02000000
+pub const SIE_STATUS_RX_OVERFLOW: u32 = 1 << 26; // 0x04000000
+pub const SIE_STATUS_RX_TIMEOUT: u32 = 1 << 27; // 0x08000000
+pub const SIE_STATUS_NAK_REC: u32 = 1 << 28; // 0x10000000
+pub const SIE_STATUS_STALL_REC: u32 = 1 << 29; // 0x20000000
+pub const SIE_STATUS_ACK_REC: u32 = 1 << 30; // 0x40000000
+pub const SIE_STATUS_DATA_SEQ_ERROR: u32 = 1 << 31; // 0x80000000
 
 // ── INTE / INTS bits ───────────────────────────────────────────────────
+// USB_INTE_*_BITS — several were WRONG in old code.
 
-pub const INT_HOST_CONN_DIS: u32 = 1 << 0;
-pub const INT_HOST_RESUME: u32 = 1 << 1;
-pub const INT_STALL: u32 = 1 << 4;
-pub const INT_BUFF_STATUS: u32 = 1 << 2;
-pub const INT_TRANS_COMPLETE: u32 = 1 << 3;
-pub const INT_ERROR_DATA_SEQ: u32 = 1 << 11;
-pub const INT_ERROR_RX_TIMEOUT: u32 = 1 << 9;
+pub const INT_HOST_CONN_DIS: u32 = 1 << 0; // 0x00000001
+pub const INT_HOST_RESUME: u32 = 1 << 1; // 0x00000002
+pub const INT_HOST_SOF: u32 = 1 << 2; // 0x00000004
+pub const INT_TRANS_COMPLETE: u32 = 1 << 3; // 0x00000008
+pub const INT_BUFF_STATUS: u32 = 1 << 4; // 0x00000010
+pub const INT_ERROR_DATA_SEQ: u32 = 1 << 5; // 0x00000020
+pub const INT_ERROR_RX_TIMEOUT: u32 = 1 << 6; // 0x00000040
+pub const INT_ERROR_RX_OVERFLOW: u32 = 1 << 7; // 0x00000080
+pub const INT_ERROR_BIT_STUFF: u32 = 1 << 8; // 0x00000100
+pub const INT_ERROR_CRC: u32 = 1 << 9; // 0x00000200
+pub const INT_STALL: u32 = 1 << 10; // 0x00000400
+pub const INT_VBUS_DETECT: u32 = 1 << 11; // 0x00000800
+pub const INT_BUS_RESET: u32 = 1 << 12; // 0x00001000
 
-// ── Endpoint control register (ECR) bits ───────────────────────────────
+// ── Endpoint control register bits (from usb_dpram.h) ──────────────────
 
 pub const EP_CTRL_ENABLE: u32 = 1 << 31;
 pub const EP_CTRL_DOUBLE_BUFFERED: u32 = 1 << 30;
 pub const EP_CTRL_INT_PER_BUFFER: u32 = 1 << 29;
 pub const EP_CTRL_INT_PER_DOUBLE_BUFFER: u32 = 1 << 28;
+pub const EP_CTRL_INT_ON_STALL: u32 = 1 << 17;
+pub const EP_CTRL_INT_ON_NAK: u32 = 1 << 16;
 pub const EP_CTRL_BUFFER_TYPE_LSB: u5 = 26;
-pub const EP_CTRL_HOST_INT_INTERVAL_LSB: u5 = 18;
+pub const EP_CTRL_HOST_INT_INTERVAL_LSB: u5 = 16; // was 18 — WRONG
 
-// ── Buffer control register (BCR) bits ─────────────────────────────────
+// ── Buffer control register bits (from usb_dpram.h) ────────────────────
 
-pub const BUF_CTRL_FULL: u32 = 1 << 15;
-pub const BUF_CTRL_LAST: u32 = 1 << 14;
-pub const BUF_CTRL_DATA1_PID: u32 = 1 << 13;
-pub const BUF_CTRL_DATA0_PID: u32 = 0;
-pub const BUF_CTRL_STALL: u32 = 1 << 11;
-pub const BUF_CTRL_AVAIL: u32 = 1 << 10;
-pub const BUF_CTRL_LEN_MASK: u32 = 0x3FF;
+pub const BUF_CTRL_FULL: u32 = 1 << 15; // 0x00008000
+pub const BUF_CTRL_LAST: u32 = 1 << 14; // 0x00004000
+pub const BUF_CTRL_DATA1_PID: u32 = 1 << 13; // 0x00002000
+pub const BUF_CTRL_DATA0_PID: u32 = 0; // 0x00000000
+pub const BUF_CTRL_SEL: u32 = 1 << 12; // 0x00001000
+pub const BUF_CTRL_STALL: u32 = 1 << 11; // 0x00000800
+pub const BUF_CTRL_AVAIL: u32 = 1 << 10; // 0x00000400
+pub const BUF_CTRL_LEN_MASK: u32 = 0x3FF; // 0x000003FF
 
 // High half (buffer 1) uses same layout shifted by 16
 pub const BUF_CTRL_AVAIL_HI: u32 = BUF_CTRL_AVAIL << 16;
 pub const UNAVAILABLE_MASK: u32 = ~(BUF_CTRL_AVAIL_HI | BUF_CTRL_AVAIL);
 
 // ── USB_MUXING bits ────────────────────────────────────────────────────
+// USB_USB_MUXING_*_BITS
 
-pub const MUXING_TO_PHY: u32 = 1 << 0;
-pub const MUXING_SOFTCON: u32 = 1 << 3;
+pub const MUXING_TO_PHY: u32 = 1 << 0; // 0x00000001
+pub const MUXING_TO_EXTPHY: u32 = 1 << 1; // 0x00000002
+pub const MUXING_TO_DIGITAL_PAD: u32 = 1 << 2; // 0x00000004
+pub const MUXING_SOFTCON: u32 = 1 << 3; // 0x00000008
 
 // ── USB_PWR bits ───────────────────────────────────────────────────────
+// USB_USB_PWR_*_BITS
 
-pub const PWR_VBUS_DETECT: u32 = 1 << 0;
-pub const PWR_VBUS_DETECT_OVERRIDE_EN: u32 = 1 << 3;
+pub const PWR_VBUS_EN: u32 = 1 << 0; // 0x00000001
+pub const PWR_VBUS_EN_OVERRIDE_EN: u32 = 1 << 1; // 0x00000002
+pub const PWR_VBUS_DETECT: u32 = 1 << 2; // 0x00000004
+pub const PWR_VBUS_DETECT_OVERRIDE_EN: u32 = 1 << 3; // 0x00000008
+pub const PWR_OVERCURR_DETECT: u32 = 1 << 4; // 0x00000010
+pub const PWR_OVERCURR_DETECT_EN: u32 = 1 << 5; // 0x00000020
+
+pub const PWR_HOST_MODE: u32 = PWR_VBUS_DETECT | PWR_VBUS_DETECT_OVERRIDE_EN | PWR_OVERCURR_DETECT | PWR_OVERCURR_DETECT_EN;
 
 // ── ADDR_ENDP bits ─────────────────────────────────────────────────────
 
