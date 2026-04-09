@@ -114,6 +114,11 @@ fn startBulkIn() void {
     const pp = pipe_in orelse return;
     if (pp.status == .started) return;
 
+    // Don't start IN if OUT is in progress on EPX
+    if (pipe_out) |po| {
+        if (po.status == .started) return;
+    }
+
     pp.ep_in = true;
     host.bulkTransferAsync(pp, &bulk_buf, BULK_BUF_SIZE, onBulkInComplete, null);
 }
@@ -259,6 +264,22 @@ pub fn resetState() void {
 }
 
 // ── Polling (called from event loop via host.zig) ──────────────────────
+
+fn printU16(val: u16) void {
+    var buf: [5]u8 = undefined;
+    var n: u16 = val;
+    var i: usize = buf.len;
+    if (n == 0) {
+        console.putc('0');
+        return;
+    }
+    while (n > 0) {
+        i -= 1;
+        buf[i] = @intCast(n % 10 + '0');
+        n /= 10;
+    }
+    console.puts(buf[i..]);
+}
 
 const IDLE_TIMEOUT_MS: u64 = 30_000;
 

@@ -191,6 +191,7 @@ var devices: [MAX_DEVICES]Device = [_]Device{.{}} ** MAX_DEVICES;
 pub var pipes: [MAX_PIPES]Pipe = [_]Pipe{.{}} ** MAX_PIPES;
 var ctrl_buf: [MAX_CTRL_BUF]u8 align(4) = undefined;
 var initialized: bool = false;
+var epx_owner: ?*Pipe = null; // tracks which pipe currently owns EPX for bulk transfers
 
 fn dev0() *Device {
     return &devices[0];
@@ -512,6 +513,7 @@ fn awaitTransfer(pp: *Pipe) void {
 
 pub fn controlTransfer(dev: *Device, setup: *const desc.SetupPacket) void {
     const pp = ctrl();
+    epx_owner = null;
 
     // Copy setup packet to DPSRAM
     const src: [*]const u8 = @ptrCast(setup);
@@ -548,6 +550,7 @@ pub fn bulkTransfer(pp: *Pipe, ptr: [*]u8, len: u16) void {
     pp.user_buf = ptr;
     pp.bytes_left = len;
     pp.bytes_done = 0;
+    routeThroughEpx(pp);
     startTransfer(pp);
 }
 
@@ -557,7 +560,15 @@ pub fn bulkTransferAsync(pp: *Pipe, ptr: [*]u8, len: u16, cb: TransferCallback, 
     pp.user_buf = ptr;
     pp.bytes_left = len;
     pp.bytes_done = 0;
+    routeThroughEpx(pp);
     startTransfer(pp);
+}
+
+fn routeThroughEpx(pp: *Pipe) void {
+    pp.ecr_addr = reg.EPX_CTRL;
+    pp.bcr_addr = reg.EPX_BUF_CTRL;
+    pp.buf_addr = reg.EPX_DATA;
+    epx_owner = pp;
 }
 
 // ── Descriptors ────────────────────────────────────────────────────────
@@ -761,18 +772,33 @@ fn enumerateDescriptors(dev: *Device) void {
             },
             desc.DT_ENDPOINT => {
                 if (dlen >= 7) {
-                    const epd: *const desc.EndpointDescriptor = @ptrCast(@alignCast(&ctrl_buf[cur]));
+                    // Parse from raw bytes to avoid alignment faults
+                    // (endpoint descriptors can start at odd offsets)
+                    const ep_addr = ctrl_buf[cur + 2];
+                    const ep_attrs = ctrl_buf[cur + 3];
+                    const ep_maxsize = @as(u16, ctrl_buf[cur + 4]) | (@as(u16, ctrl_buf[cur + 5]) << 8);
+                    const ep_interval = ctrl_buf[cur + 6];
+
                     console.puts("[usb]   endpoint EP");
-                    printU8(epd.bEndpointAddress & 0x0F);
-                    if (epd.bEndpointAddress & 0x80 != 0) {
+                    printU8(ep_addr & 0x0F);
+                    if (ep_addr & 0x80 != 0) {
                         console.puts(" IN");
                     } else {
                         console.puts(" OUT");
                     }
                     console.puts(" maxsize=");
-                    printU16(epd.wMaxPacketSize);
+                    printU16(ep_maxsize);
                     console.puts("\n");
-                    _ = nextPipe(dev.dev_addr, epd, null);
+
+                    const epd_aligned = desc.EndpointDescriptor{
+                        .bLength = ctrl_buf[cur],
+                        .bDescriptorType = ctrl_buf[cur + 1],
+                        .bEndpointAddress = ep_addr,
+                        .bmAttributes = ep_attrs,
+                        .wMaxPacketSize = ep_maxsize,
+                        .bInterval = ep_interval,
+                    };
+                    _ = nextPipe(dev.dev_addr, &epd_aligned, null);
                 }
             },
             else => {},
@@ -898,7 +924,7 @@ pub fn isr() void {
                 bits &= ~mask;
                 reg.write(reg.BUFF_STATUS, mask);
 
-                const pp = &pipes[pipe_idx];
+                const pp = if (pipe_idx == 0 and epx_owner != null) epx_owner.? else &pipes[pipe_idx];
                 finishTransaction(pp);
 
                 if (pp.bytes_left > 0) {
