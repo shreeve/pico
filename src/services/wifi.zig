@@ -1,4 +1,5 @@
 // Wi-Fi service for Pico W / Pico 2 W (CYW43 driver).
+const std = @import("std");
 const c = @import("../vm/c.zig");
 const console = @import("console.zig");
 const cyw43 = @import("../cyw43/mod.zig");
@@ -12,8 +13,36 @@ var ip_buf: [16]u8 = undefined;
 var ip_len: usize = 0;
 var cyw43_ready: bool = false;
 
+fn refreshState() void {
+    if (!cyw43_ready) {
+        ip_len = 0;
+        return;
+    }
+
+    if (cyw43.hasIpAddress()) {
+        const ip = cyw43.getIpAddress();
+        const formatted = std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+        }) catch {
+            ip_len = 0;
+            return;
+        };
+        ip_len = formatted.len;
+        state = .connected;
+        return;
+    }
+
+    ip_len = 0;
+    if (state == .connected) state = .disconnected;
+}
+
 pub fn init() void {
     state = .disconnected;
+    ip_len = 0;
+    cyw43_ready = false;
     console.puts("[wifi] init: CYW43 driver\n");
 
     cyw43.init(.pico_w) catch {
@@ -23,6 +52,7 @@ pub fn init() void {
     };
 
     cyw43_ready = true;
+    refreshState();
     console.puts("[wifi] CYW43 ready\n");
 }
 
@@ -39,18 +69,23 @@ pub fn connect(ssid: []const u8, password: []const u8) bool {
 
 pub fn disconnect() void {
     state = .disconnected;
+    ip_len = 0;
     console.puts("[wifi] disconnected\n");
 }
 
 pub fn poll() void {
-    if (cyw43_ready) cyw43.service();
+    if (cyw43_ready) {
+        cyw43.service();
+        refreshState();
+    }
 }
 
 pub fn isConnected() bool {
-    return state == .connected;
+    return cyw43_ready and cyw43.hasIpAddress();
 }
 
 pub fn getIp() ?[]const u8 {
+    refreshState();
     if (ip_len == 0) return null;
     return ip_buf[0..ip_len];
 }
@@ -76,6 +111,7 @@ pub export fn js_wifi_disconnect(_: ?*c.JSContext, _: ?*c.JSValue, _: c_int, _: 
 
 pub export fn js_wifi_status(ctx: ?*c.JSContext, _: ?*c.JSValue, _: c_int, _: ?[*]c.JSValue) c.JSValue {
     const cx = ctx orelse return c.JS_UNDEFINED;
+    refreshState();
     const label: []const u8 = switch (state) {
         .disconnected => "disconnected",
         .connecting => "connecting",

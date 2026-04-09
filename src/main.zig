@@ -63,7 +63,10 @@ fn printU32(val: u32) void {
     var buf: [10]u8 = undefined;
     var n = val;
     var i: usize = buf.len;
-    if (n == 0) { putc('0'); return; }
+    if (n == 0) {
+        putc('0');
+        return;
+    }
     while (n > 0) {
         i -= 1;
         buf[i] = @intCast(n % 10 + '0');
@@ -76,7 +79,10 @@ fn printU64(val: u64) void {
     var buf: [20]u8 = undefined;
     var n = val;
     var i: usize = buf.len;
-    if (n == 0) { putc('0'); return; }
+    if (n == 0) {
+        putc('0');
+        return;
+    }
     while (n > 0) {
         i -= 1;
         buf[i] = @intCast(n % 10 + '0');
@@ -130,8 +136,9 @@ pub fn main() noreturn {
             const pass = config.wifiPass() orelse "";
             _ = wifi.connect(ssid, pass);
         }
-    } else {
-        puts("[boot] no wifi config — provisioning mode\n");
+    }
+    if (!wifi.isConnected()) {
+        puts("[boot] no active Wi-Fi link — provisioning mode\n");
         provisioning.start();
     }
 
