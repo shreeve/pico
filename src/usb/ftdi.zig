@@ -11,7 +11,6 @@
 //      (ENQ/EOT) and frame boundaries (CR LF)
 
 const host = @import("host.zig");
-const desc = @import("descriptors.zig");
 const console = @import("../services/console.zig");
 
 // ── ASTM control characters ────────────────────────────────────────────
@@ -19,6 +18,7 @@ const console = @import("../services/console.zig");
 const STX: u8 = 0x02;
 const ETX: u8 = 0x03;
 const EOT: u8 = 0x04;
+const ETB: u8 = 0x17;
 const ENQ: u8 = 0x05;
 const ACK: u8 = 0x06;
 const NAK: u8 = 0x15;
@@ -28,7 +28,7 @@ const LF: u8 = 0x0A;
 // ── Session state ──────────────────────────────────────────────────────
 
 const RX_BUF_SIZE = 2048;
-const BULK_BUF_SIZE = 64;
+const BULK_BUF_SIZE = 64; // shared between IN completions — payload must be consumed before re-arm
 
 const SessionState = enum {
     idle,
@@ -43,6 +43,8 @@ var active_dev: u8 = 0;
 var pipe_in: ?*host.Pipe = null;
 var pipe_out: ?*host.Pipe = null;
 var setup_done: bool = false;
+var last_rx_time: u64 = 0;
+var timeout_reported: bool = false;
 
 // ── FTDI vendor setup ──────────────────────────────────────────────────
 
@@ -79,9 +81,12 @@ pub fn ftdiSetup(dev: *host.Device) void {
         return;
     }
 
+    const hal = @import("../platform/hal.zig");
     setup_done = true;
     state = .idle;
     rx_len = 0;
+    last_rx_time = hal.millis();
+    timeout_reported = false;
 
     console.puts("[ftdi] ready — polling for data\n");
     startBulkIn();
@@ -116,7 +121,7 @@ fn startBulkIn() void {
 fn onBulkInComplete(ctx: ?*anyopaque, result: *const host.TransferResult) void {
     _ = ctx;
 
-    if (result.len < 2) {
+    if (result.status != 0 or result.len < 2) {
         startBulkIn();
         return;
     }
@@ -128,8 +133,17 @@ fn onBulkInComplete(ctx: ?*anyopaque, result: *const host.TransferResult) void {
         return;
     }
 
-    processPayload(payload);
-    startBulkIn();
+    const hal = @import("../platform/hal.zig");
+    last_rx_time = hal.millis();
+    timeout_reported = false;
+
+    // processPayload may call sendAck, which starts a bulk OUT on EPX.
+    // If it does, the OUT completion callback will re-arm the IN poll.
+    // If it doesn't (no ENQ/frame boundary), we re-arm directly.
+    const need_ack = processPayload(payload);
+    if (!need_ack) {
+        startBulkIn();
+    }
 }
 
 // ── Bulk OUT (send control characters) ─────────────────────────────────
@@ -148,6 +162,7 @@ fn sendByte(byte: u8) void {
 fn onBulkOutComplete(ctx: ?*anyopaque, result: *const host.TransferResult) void {
     _ = ctx;
     _ = result;
+    startBulkIn();
 }
 
 fn sendAck() void {
@@ -156,14 +171,19 @@ fn sendAck() void {
 
 // ── ASTM session logic ─────────────────────────────────────────────────
 
-fn processPayload(payload: []const u8) void {
+fn processPayload(payload: []const u8) bool {
+    var sent_ack = false;
+
     for (payload) |byte| {
         switch (byte) {
             ENQ => {
                 console.puts("[astm] ENQ received — sending ACK\n");
-                sendAck();
                 state = .receiving;
                 rx_len = 0;
+                if (!sent_ack) {
+                    sendAck();
+                    sent_ack = true;
+                }
             },
             EOT => {
                 console.puts("[astm] EOT — transfer complete\n");
@@ -179,25 +199,43 @@ fn processPayload(payload: []const u8) void {
 
                     if (byte == LF and rx_len >= 2 and rx_buf[rx_len - 2] == CR) {
                         processFrame();
-                        sendAck();
+                        if (!sent_ack) {
+                            sendAck();
+                            sent_ack = true;
+                        }
                     }
                 }
             },
         }
     }
+
+    return sent_ack;
 }
 
 fn processFrame() void {
-    if (rx_len < 7) {
+    if (rx_len < 2) {
         rx_len = 0;
         return;
     }
 
-    // Frame: STX seq data ETX/ETB checksum CR LF
-    // Strip framing: skip STX (byte 0), stop before ETX checksum CR LF (last 5)
-    // The display content is between byte 1 and len-5
-    const start: usize = if (rx_buf[0] == STX) 1 else 0;
-    const end: usize = if (rx_len >= 5) rx_len - 5 else rx_len;
+    // ASTM frame: STX seq data ETX/ETB checksum(2) CR LF
+    // Minimum: STX + seq + ETX + chk + chk + CR + LF = 7 bytes
+    // But partial/malformed frames should still be displayed.
+    //
+    // Strip: leading STX, trailing ETX/ETB + checksum(2) + CR + LF
+    // Keep: sequence number + data content (matches C reference output)
+
+    var start: usize = 0;
+    var end: usize = rx_len;
+
+    // Skip leading STX
+    if (start < end and rx_buf[start] == STX) start += 1;
+
+    // Strip trailing CR LF
+    if (end >= 2 and rx_buf[end - 1] == LF and rx_buf[end - 2] == CR) end -= 2;
+
+    // Strip trailing checksum (2 hex digits) + ETX/ETB
+    if (end >= 3 and (rx_buf[end - 3] == ETX or rx_buf[end - 3] == ETB)) end -= 3;
 
     if (end > start) {
         console.puts(rx_buf[start..end]);
@@ -207,7 +245,22 @@ fn processFrame() void {
     rx_len = 0;
 }
 
+// ── Reset (called on disconnect) ───────────────────────────────────────
+
+pub fn resetState() void {
+    setup_done = false;
+    pipe_in = null;
+    pipe_out = null;
+    active_dev = 0;
+    state = .idle;
+    rx_len = 0;
+    last_rx_time = 0;
+    timeout_reported = false;
+}
+
 // ── Polling (called from event loop via host.zig) ──────────────────────
+
+const IDLE_TIMEOUT_MS: u64 = 30_000;
 
 pub fn pollTick() void {
     if (!setup_done) return;
@@ -215,5 +268,14 @@ pub fn pollTick() void {
     const pp = pipe_in orelse return;
     if (pp.status != .started and pp.status != .unconfigured) {
         startBulkIn();
+    }
+
+    if (!timeout_reported and last_rx_time > 0) {
+        const hal = @import("../platform/hal.zig");
+        const now = hal.millis();
+        if (now - last_rx_time > IDLE_TIMEOUT_MS) {
+            console.puts("[ftdi] no data for 30s — device may be idle\n");
+            timeout_reported = true;
+        }
     }
 }

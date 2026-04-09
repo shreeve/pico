@@ -866,6 +866,8 @@ pub fn isr() void {
                 .cb_arg = @ptrCast(dev0()),
             });
         } else {
+            const ftdi = @import("ftdi.zig");
+            ftdi.resetState();
             clearDevice(0);
             clearAllPipes();
             setupCtrl();
@@ -941,6 +943,8 @@ fn processTask() void {
             .callback => {},
 
             .connect => {
+                const ftdi = @import("ftdi.zig");
+                ftdi.resetState();
                 clearDevice(0);
                 clearAllPipes();
                 setupCtrl();
@@ -1067,10 +1071,6 @@ pub fn poll() void {
 
 pub fn getCtrl() *Pipe {
     return ctrl();
-}
-
-pub fn findPipe(dev_addr: u8, ep_num: u8) *Pipe {
-    return getPipe(dev_addr, ep_num);
 }
 
 pub fn getCtrlBuf() []u8 {
