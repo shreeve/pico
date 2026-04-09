@@ -114,6 +114,23 @@ fn initClocks() void {
 
     // Enable clk_peri = clk_sys (needed by UART, SPI, I2C)
     hal.regWrite(CLOCKS_BASE + 0x48, (1 << 11)); // CLK_PERI_CTRL: ENABLE, AUXSRC = clk_sys (0)
+
+    // Configure PLL_USB for 48 MHz: 12 MHz * 100 / 5 / 5 = 48 MHz
+    // Required for USBCTRL to come out of reset and for USB operation.
+    hal.regClr(RESETS_RESET, 1 << 13); // deassert PLL_USB reset
+    while ((hal.regRead(RESETS_RESET_DONE) & (1 << 13)) == 0) {}
+
+    hal.regWrite(PLL_USB_BASE + 0x04, 0xFFFFFFFF); // PWR: power down everything
+    hal.regWrite(PLL_USB_BASE + 0x08, 100); // FBDIV_INT: VCO = 12 * 100 = 1200 MHz
+    hal.regClr(PLL_USB_BASE + 0x04, (1 << 0) | (1 << 5)); // PWR: clear PD + VCOPD
+    while ((hal.regRead(PLL_USB_BASE + 0x00) & (1 << 31)) == 0) {} // wait CS.LOCK
+    hal.regWrite(PLL_USB_BASE + 0x0C, (5 << 16) | (5 << 12)); // PRIM: postdiv1=5, postdiv2=5
+    hal.regClr(PLL_USB_BASE + 0x04, 1 << 3); // PWR: clear POSTDIVPD
+
+    // Enable clk_usb = PLL_USB at 48 MHz (required for USB controller)
+    hal.regWrite(CLOCKS_BASE + 0x54, 0); // CLK_USB_CTRL: disable before switching
+    hal.regWrite(CLOCKS_BASE + 0x58, 1 << 8); // CLK_USB_DIV: integer divisor = 1
+    hal.regWrite(CLOCKS_BASE + 0x54, (1 << 11)); // CLK_USB_CTRL: ENABLE, AUXSRC = PLL_USB (0)
 }
 
 fn initPeripherals() void {
