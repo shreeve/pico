@@ -26,6 +26,50 @@ The full path from bare metal to IP is now proven on hardware: PIO SPI at 31 MHz
 
 **Next milestone: ARP validation + TCP/IP, then TLS and MQTT.**
 
+## Known-Good Wi-Fi Recovery
+
+If you need to get back to the last known-good "boot → join Wi-Fi → DHCP" flow,
+use the `main` branch at commit `f0f0ac3`.
+
+Important facts about the current tree:
+
+- `src/services/storage.zig` is still a stub, so runtime flash-backed Wi-Fi
+  config does NOT work yet
+- `src/services/wifi.zig.connect()` is still a facade and does NOT drive the
+  real CYW43 join path yet
+- the currently proven path is the older build-time credential flow inside
+  `src/cyw43/control/boot.zig`
+
+That means: if you want to reproduce the known-good Wi-Fi path, do NOT rely on
+runtime config loading from flash. Instead, build with credentials:
+
+```bash
+zig build -DSSID='Shreeve:innovation'
+openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+  -c "adapter speed 1000; program zig-out/bin/pico verify reset exit"
+```
+
+Expected UART log shape on success:
+
+- `[cyw43] scan started`
+- `[join] configuring WPA2-PSK...`
+- `[join] associated!`
+- `[dhcp] starting...`
+- `[dhcp] offer 10.0.0.27 from 10.0.0.1`
+- `[dhcp] bound 10.0.0.27 gw 10.0.0.1 mask 255.255.255.0`
+- `[wifi] IP=10.0.0.27`
+
+If the log shows:
+
+- scan results
+- then immediately `[boot] no active Wi-Fi link — provisioning mode`
+
+that means the firmware was built without `-DSSID=...`, or the runtime config
+path was expected to provide credentials (it currently cannot).
+
+The USB host rewrite work was split out to branch `usb-host-zig-core` so that
+`main` can still be used as the Wi-Fi/DHCP recovery branch.
+
 ## AI Peer Review (MCP) — USE THIS
 
 You have access to **GPT-5.4** as a peer reviewer via the `user-ai` MCP server. **Use it proactively** — it was critical to achieving the MQuickJS milestone. In that session, GPT-5.4:
