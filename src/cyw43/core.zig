@@ -28,7 +28,7 @@ const service_mod = @import("netif/service.zig");
 const dhcp = @import("../net/dhcp.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
-const wifi_config = @import("wifi_config");
+const build_config = @import("build_config");
 
 pub const State = types.State;
 pub const Error = types.Error;
@@ -241,8 +241,8 @@ fn bootctx() boot_mod.Context {
         .reset_core = &resetCore,
         .clm_load = &clmLoad,
         .rx_buf = &rx_buf,
-        .wifi_ssid = wifi_config.ssid,
-        .wifi_pass = wifi_config.pass,
+        .wifi_ssid = build_config.ssid,
+        .wifi_pass = build_config.pass,
     };
 }
 

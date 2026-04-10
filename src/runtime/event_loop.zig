@@ -43,11 +43,14 @@ pub fn run() noreturn {
 }
 
 /// Execute one iteration of the loop (for testing / hosted mode).
-pub fn step() void {
+/// Returns true if the scheduler had work to run.
+pub fn step() bool {
     tick_count +%= 1;
     timer_mod.processPending();
     processIO();
+    const had_work = scheduler.hasWork();
     scheduler.runReady();
+    return had_work;
 }
 
 /// Register an I/O poll callback.

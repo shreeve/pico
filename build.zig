@@ -96,9 +96,13 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    const wifi_options = b.addOptions();
-    wifi_options.addOption([]const u8, "ssid", wifi_ssid);
-    wifi_options.addOption([]const u8, "pass", wifi_pass);
+    // USB host mode: zig build -DUSB_HOST (enables USB host for Piccolo)
+    const usb_host_enabled = b.option(bool, "USB_HOST", "Enable USB host mode (disables flashing via USB)") orelse false;
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "ssid", wifi_ssid);
+    build_options.addOption([]const u8, "pass", wifi_pass);
+    build_options.addOption(bool, "usb_host", usb_host_enabled);
 
     const fw_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -106,7 +110,7 @@ pub fn build(b: *std.Build) void {
         .optimize = fw_optimize,
         .link_libc = false,
     });
-    fw_module.addImport("wifi_config", wifi_options.createModule());
+    fw_module.addImport("build_config", build_options.createModule());
 
     // Shim headers must come FIRST so they override system headers
     fw_module.addIncludePath(b.path("src/libc"));

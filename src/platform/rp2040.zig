@@ -75,6 +75,7 @@ pub const UART_FBRD = 0x028;
 pub const UART_LCR_H = 0x02C;
 pub const UART_CR = 0x030;
 pub const UART_FR_TXFF: u32 = 1 << 5;
+pub const UART_FR_RXFE: u32 = 1 << 4;
 
 // ── Initialization ─────────────────────────────────────────────────────
 
@@ -178,11 +179,37 @@ pub fn uartWrite(base: u32, byte: u8) void {
     hal.regWrite(base + UART_DR, byte);
 }
 
+pub fn uartReadAvailable(base: u32) bool {
+    return (hal.regRead(base + UART_FR) & UART_FR_RXFE) == 0;
+}
+
+pub fn uartRead(base: u32) u8 {
+    return @truncate(hal.regRead(base + UART_DR));
+}
+
 pub fn uartPuts(base: u32, s: []const u8) void {
     for (s) |c| {
         if (c == '\n') uartWrite(base, '\r');
         uartWrite(base, c);
     }
+}
+
+// ── ROM functions ───────────────────────────────────────────────────────
+
+const CC = @import("std").builtin.CallingConvention;
+
+fn romTableLookup(code: u32) usize {
+    const table_ptr: *const u16 = @ptrFromInt(0x14);
+    const lookup_ptr: *const u16 = @ptrFromInt(0x18);
+    const table: [*]const u16 = @ptrFromInt(@as(u32, table_ptr.*));
+    const lookup: *const fn ([*]const u16, u32) callconv(CC.c) usize = @ptrFromInt(@as(u32, lookup_ptr.*));
+    return lookup(table, code);
+}
+
+pub fn resetToUsbBoot() noreturn {
+    const reset_fn: *const fn (u32, u32) callconv(CC.c) noreturn =
+        @ptrFromInt(romTableLookup('U' | (@as(u32, 'B') << 8)));
+    reset_fn(0, 0);
 }
 
 // ── GPIO (via SIO for fast single-cycle access) ────────────────────────

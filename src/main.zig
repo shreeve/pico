@@ -14,6 +14,7 @@ comptime {
     _ = @import("platform/boot.zig");
 }
 
+const build_config = @import("build_config");
 const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const memory = @import("runtime/memory.zig");
@@ -126,13 +127,14 @@ pub fn main() noreturn {
     };
     puts("[boot] MQuickJS VM ready\n");
 
-    // 6. USB Host
-    usb_host.init();
-    usb_js.initCallbacks();
-
-    // Register I/O poll callbacks
-    event_loop.registerIO(usb_host.poll) catch {};
-    event_loop.registerIO(usb_ftdi.pollTick) catch {};
+    // 6. USB Host (only when built with -DUSB_HOST)
+    if (build_config.usb_host) {
+        usb_host.init();
+        usb_js.initCallbacks();
+        event_loop.registerIO(usb_host.poll) catch {};
+        event_loop.registerIO(usb_ftdi.pollTick) catch {};
+        puts("[boot] USB host ready\n");
+    }
 
     // 9. Try loading a script from flash
     loadStoredScript();
@@ -150,7 +152,8 @@ pub fn main() noreturn {
     var heartbeat: u32 = 0;
     var next_heartbeat = hal.millis() + 5000;
     while (true) {
-        event_loop.step();
+        _ = event_loop.step();
+        pollUartCmd();
 
         const now = hal.millis();
         if (now >= next_heartbeat) {
@@ -162,6 +165,8 @@ pub fn main() noreturn {
             heartbeat +%= 1;
             next_heartbeat = now + 5000;
         }
+
+        asm volatile ("nop");
     }
 }
 
@@ -199,6 +204,33 @@ const hello_script =
     \\
 ;
 
+// ── UART command listener ────────────────────────────────────────────
+
+var cmd_buf: [16]u8 = undefined;
+var cmd_len: usize = 0;
+
+fn pollUartCmd() void {
+    while (rp2040.uartReadAvailable(rp2040.UART0_BASE)) {
+        const ch = rp2040.uartRead(rp2040.UART0_BASE);
+        if (ch == '\r' or ch == '\n') {
+            if (cmd_len == 6 and
+                cmd_buf[0] == 'r' and cmd_buf[1] == 'e' and
+                cmd_buf[2] == 'b' and cmd_buf[3] == 'o' and
+                cmd_buf[4] == 'o' and cmd_buf[5] == 't')
+            {
+                puts("[reboot] entering BOOTSEL mode...\n");
+                rp2040.resetToUsbBoot();
+            }
+            cmd_len = 0;
+        } else if (cmd_len < cmd_buf.len) {
+            cmd_buf[cmd_len] = ch;
+            cmd_len += 1;
+        } else {
+            cmd_len = 0;
+        }
+    }
+}
+
 fn hang() noreturn {
     while (true) {
         asm volatile ("wfi");
@@ -206,7 +238,7 @@ fn hang() noreturn {
 }
 
 pub fn usbIrq() void {
-    usb_host.isr();
+    if (build_config.usb_host) usb_host.isr();
 }
 
 pub const panic = @import("runtime/panic.zig").panic;
