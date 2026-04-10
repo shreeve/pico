@@ -9,7 +9,6 @@
 const dhcp = @import("dhcp.zig");
 const arp_mod = @import("arp.zig");
 const icmp = @import("icmp.zig");
-const tcp = @import("tcp.zig");
 const netif = @import("netif.zig");
 const core = @import("../cyw43/core.zig");
 
@@ -66,7 +65,6 @@ pub fn handlePacket(ip_data: []const u8) void {
             var src_arr: [4]u8 = undefined;
             @memcpy(&src_arr, src_ip[0..4]);
             s.tcpInput(src_arr, payload);
-            tcp.handleSegment(src_ip, payload);
         },
         else => {},
     }

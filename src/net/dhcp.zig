@@ -110,19 +110,6 @@ pub fn handleUdp(udp_data: []const u8) void {
     handleDhcp(bootp);
 }
 
-/// Legacy entry point — accepts raw IPv4 data including IP header.
-/// Kept for any remaining direct callers during transition.
-pub fn handlePacket(ip_data: []const u8) void {
-    if (dhcp_state == .idle or dhcp_state == .bound) return;
-    if (ip_data.len < 20) return;
-
-    const ihl: usize = @as(usize, ip_data[0] & 0x0F) * 4;
-    if (ip_data[9] != 17) return;
-    if (ip_data.len < ihl + 8) return;
-
-    handleUdp(ip_data[ihl..]);
-}
-
 // ── DHCP message handling ─────────────────────────────────────────────
 
 fn handleDhcp(bootp: []const u8) void {

@@ -1,6 +1,5 @@
 const types = @import("../types.zig");
 const dhcp = @import("../../net/dhcp.zig");
-const tcp = @import("../../net/tcp.zig");
 const ioctl = @import("../control/ioctl.zig");
 
 pub fn service(
@@ -22,5 +21,4 @@ pub fn service(
         }
     }
     dhcp.tick();
-    tcp.tick();
 }
