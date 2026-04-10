@@ -10,6 +10,9 @@
 //   var stack: Stack = Stack.init();
 //   stack.tick();
 
+const ipv4 = @import("ipv4.zig");
+const dhcp_client = @import("dhcp_client.zig");
+
 pub const Config = struct {
     enable_arp: bool = true,
     enable_icmp: bool = true,
@@ -578,7 +581,6 @@ pub fn NetStack(comptime cfg: Config) type {
             self.tx_buf[16] = @intCast(cksum >> 8);
             self.tx_buf[17] = @intCast(cksum & 0xFF);
 
-            const ipv4 = @import("ipv4.zig");
             ipv4.sendPacket(conn.remote_ip, ipv4.PROTO_TCP, self.tx_buf[0..total]) catch {};
             self.stats.tcp_tx += 1;
         }
@@ -696,11 +698,10 @@ fn seqGe(a: u32, b: u32) bool {
 }
 
 fn tcpChecksum(seg: []const u8, conn: anytype) u16 {
-    const dhcp = @import("dhcp_client.zig");
     var sum: u32 = 0;
 
-    sum += (@as(u32, dhcp.ip_addr[0]) << 8) | dhcp.ip_addr[1];
-    sum += (@as(u32, dhcp.ip_addr[2]) << 8) | dhcp.ip_addr[3];
+    sum += (@as(u32, dhcp_client.ip_addr[0]) << 8) | dhcp_client.ip_addr[1];
+    sum += (@as(u32, dhcp_client.ip_addr[2]) << 8) | dhcp_client.ip_addr[3];
     sum += (@as(u32, conn.remote_ip[0]) << 8) | conn.remote_ip[1];
     sum += (@as(u32, conn.remote_ip[2]) << 8) | conn.remote_ip[3];
     sum += 6;

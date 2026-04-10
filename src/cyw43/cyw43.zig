@@ -10,7 +10,7 @@ pub const types = @import("types.zig");
 pub const bus = @import("transport/bus.zig");
 pub const pio_spi = @import("transport/pio_spi.zig");
 pub const regs = @import("regs.zig");
-pub const core = @import("device.zig");
+pub const device = @import("device.zig");
 pub const dhcp = @import("../net/dhcp_client.zig");
 pub const arp = @import("../net/arp.zig");
 pub const ipv4 = @import("../net/ipv4.zig");
@@ -30,33 +30,33 @@ fn boardOps(b: Board) *const board.BoardOps {
 
 /// Full init: probe bus + boot firmware.
 pub fn init(b: Board) Error!void {
-    try core.init(boardOps(b));
+    try device.init(boardOps(b));
 }
 
 /// Probe only: verify SPI bus, ALP clock, chip ID. No firmware needed.
 pub fn probe(b: Board) Error!void {
-    try core.probe(boardOps(b));
+    try device.probe(boardOps(b));
 }
 
 /// Boot firmware after successful probe.
 pub fn boot() Error!void {
-    try core.boot();
+    try device.boot();
 }
 
 pub fn getState() State {
-    return core.getState();
+    return device.getState();
 }
 
 pub fn ledSet(on: bool) Error!void {
-    try core.ledSet(on);
+    try device.ledSet(on);
 }
 
 pub fn gpioSet(gpio: u8, value: bool) Error!void {
-    try core.gpioSet(gpio, value);
+    try device.gpioSet(gpio, value);
 }
 
 pub fn service() void {
-    core.service();
+    device.service();
 }
 
 pub fn getIpAddress() [4]u8 {

@@ -23,10 +23,10 @@ The networking stack has been significantly expanded:
 - **IPv4 layer** (`src/net/ipv4.zig`) — generic IP RX demux (ICMP/UDP/TCP), header checksum validation, fragment rejection, destination check, outbound TX with routing
 - **ICMP echo reply** (`src/net/icmp.zig`) — device can be pinged from the LAN
 - **ARP client/cache** (`src/net/arp.zig`) — outbound ARP requests, 8-entry cache with LRU eviction, gateway MAC resolution, gratuitous ARP on DHCP bind
-- **TCP state machine** (`src/net/tcp.zig`) — single-connection client/server with full state machine (SYN/ACK/FIN), retransmission, checksums, MSS 1460
+- **TCP/IP stack** (`src/net/tcpip.zig`) — comptime-composed NetStack with multi-connection TCP, app-driven retransmit via AppVTable, work-flag output processing
 - **TLS integration point** (`src/net/tls.zig`) — placeholder for BearSSL, honest error returns
-- **MQTT 3.1.1 client** (`src/services/mqtt.zig`) — CONNECT, PUBLISH, SUBSCRIBE, PINGREQ, DISCONNECT, QoS 0
-- **Flash KV storage** (`src/services/storage.zig`) — append-log format, read-only via XIP
+- **MQTT 3.1.1 client** (`src/bindings/mqtt.zig`) — CONNECT, PUBLISH, SUBSCRIBE, PINGREQ via AppVTable, QoS 0
+- **Flash KV storage** (`src/bindings/storage.zig`) — append-log format, read-only via XIP
 - **Watchdog** (`src/runtime/watchdog.zig`) — 8-second timeout, crash counter, safe-mode detection
 - **Periodic timer tick** — 10ms ALARM0-based interrupt enabling `wfe` idle in the main loop
 - **Truthful `wifi.connect()`** — now actually calls `cyw43.joinWpa2()` and starts DHCP

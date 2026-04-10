@@ -1,4 +1,4 @@
-// Wi-Fi service for Pico W / Pico 2 W (CYW43 driver).
+// Wi-Fi management + JS bindings for Pico W / Pico 2 W.
 const std = @import("std");
 const c = @import("../js/quickjs_api.zig");
 const console = @import("console.zig");
@@ -70,7 +70,7 @@ pub fn connect(ssid: []const u8, password: []const u8) bool {
     ssid_len = @min(ssid.len, ssid_buf.len);
     state = .connecting;
 
-    cyw43.core.joinWpa2(ssid, password) catch {
+    cyw43.device.joinWpa2(ssid, password) catch {
         console.puts("[wifi] join failed\n");
         state = .failed;
         return false;

@@ -68,8 +68,8 @@ picocom -b 115200 /dev/cu.usbmodem201302
 ### Current limitation
 
 Remote script upload over TCP is **not wired up yet**. The command parser
-exists in `src/net/protocol.zig`, but the TCP transport in
-`src/net/tcp.zig` is still a stub.
+exists in `src/net/script_push.zig` and uses the `AppVTable` interface
+on the TCP/IP stack in `src/net/tcpip.zig`.
 
 ## Architecture
 
@@ -162,13 +162,13 @@ pico/
 │   │   ├── timer.zig      Software timers
 │   │   ├── memory.zig     Memory pool manager
 │   │   └── panic.zig      Fault handler
-│   ├── vm/                MQuickJS integration
+│   ├── js/                MQuickJS integration
 │   │   ├── engine.zig     JS engine wrapper
 │   │   ├── c.zig          Zig declarations for the MQuickJS C API
 │   │   ├── pico_stdlib_gen.c   JS stdlib definition source for codegen
 │   │   ├── pico_stdlib_data.c
 │   │   └── pico_bringup.c      bring-up helpers used by test_main
-│   ├── services/          Hardware services → JS
+│   ├── bindings/          JS API bindings
 │   │   ├── console.zig    UART output
 │   │   ├── gpio.zig       GPIO control
 │   │   ├── timer.zig      setTimeout/setInterval

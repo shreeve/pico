@@ -26,6 +26,8 @@ const console = @import("bindings/console.zig");
 const storage = @import("bindings/storage.zig");
 const config = @import("config/device_config.zig");
 const wifi = @import("bindings/wifi.zig");
+const mqtt = @import("bindings/mqtt.zig");
+const script_push = @import("net/script_push.zig");
 const usb_host = @import("usb/host.zig");
 const usb_ftdi = @import("usb/ftdi.zig");
 const usb_js = @import("bindings/usb.zig");
@@ -150,10 +152,13 @@ pub fn main() noreturn {
         puts("\n");
     }
 
-    // 7. Periodic timer tick (10ms, enables wfe in main loop)
+    // 7. Script push listener (TCP port 9001)
+    script_push.init();
+
+    // 8. Periodic timer tick (10ms, enables wfe in main loop)
     rp2040.initPeriodicTick();
 
-    // 8. USB Host (only when built with -DUSB_HOST)
+    // 9. USB Host (only when built with -DUSB_HOST)
     if (build_config.usb_host) {
         usb_host.init();
         usb_js.initCallbacks();
@@ -185,6 +190,7 @@ pub fn main() noreturn {
         _ = event_loop.step();
         pollUartCmd();
         wifi.poll();
+        mqtt.poll();
         netif.tick();
         watchdog.feed();
 

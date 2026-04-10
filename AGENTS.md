@@ -33,9 +33,9 @@ use the `main` branch at commit `f0f0ac3`.
 
 Important facts about the current tree:
 
-- `src/services/storage.zig` is still a stub, so runtime flash-backed Wi-Fi
+- `src/bindings/storage.zig` is still a stub, so runtime flash-backed Wi-Fi
   config does NOT work yet
-- `src/services/wifi.zig.connect()` is still a facade and does NOT drive the
+- `src/bindings/wifi.zig` `connect()` now calls `cyw43.device.joinWpa2()` but the
   real CYW43 join path yet
 - the currently proven path is the older build-time credential flow inside
   `src/cyw43/control/boot.zig`
