@@ -61,42 +61,42 @@ fn processCommand() void {
 
     switch (cmd) {
         .ping => {
-            _ = tcp.send("PONG\n");
+            tcp.send("PONG\n") catch {};
         },
         .upload => {
             const size = parseSizeArg(line) orelse {
-                _ = tcp.send("ERR: bad size\n");
+                tcp.send("ERR: bad size\n") catch {};
                 return;
             };
             if (size > MAX_SCRIPT_SIZE) {
-                _ = tcp.send("ERR: too large\n");
+                tcp.send("ERR: too large\n") catch {};
                 return;
             }
             pending_upload_size = size;
             script_len = 0;
             proto_state = .receiving_upload;
-            _ = tcp.send("OK: ready\n");
+            tcp.send("OK: ready\n") catch {};
         },
         .run => {
             if (script_len == 0) {
-                _ = tcp.send("ERR: no script\n");
+                tcp.send("ERR: no script\n") catch {};
                 return;
             }
-            _ = tcp.send("OK: running\n");
+            tcp.send("OK: running\n") catch {};
             runScript();
         },
         .restart => {
             // TODO: trigger watchdog reset
-            _ = tcp.send("OK: restarting\n");
+            tcp.send("OK: restarting\n") catch {};
         },
         .logs => {
-            _ = tcp.send("OK: log streaming not yet implemented\n");
+            tcp.send("OK: log streaming not yet implemented\n") catch {};
         },
         .repl => {
-            _ = tcp.send("OK: REPL not yet implemented\n");
+            tcp.send("OK: REPL not yet implemented\n") catch {};
         },
         .unknown => {
-            _ = tcp.send("ERR: unknown command\n");
+            tcp.send("ERR: unknown command\n") catch {};
         },
     }
 }
@@ -105,10 +105,8 @@ fn receiveUpload() void {
     const remaining = pending_upload_size - script_len;
     if (remaining == 0) {
         proto_state = .idle;
-        _ = tcp.send("OK: uploaded\n");
-        console.puts("[proto] script uploaded (");
-        // TODO: print size
-        console.puts(" bytes)\n");
+        tcp.send("OK: uploaded\n") catch {};
+        console.puts("[proto] script uploaded\n");
         return;
     }
 
@@ -117,7 +115,7 @@ fn receiveUpload() void {
 
     if (script_len >= pending_upload_size) {
         proto_state = .idle;
-        _ = tcp.send("OK: uploaded\n");
+        tcp.send("OK: uploaded\n") catch {};
     }
 }
 

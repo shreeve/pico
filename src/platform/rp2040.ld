@@ -4,16 +4,17 @@
  *
  * Flash layout:
  *   0x1000_0000 .. 0x1000_00FF  boot2 (256 bytes stage-2 bootloader)
- *   0x1000_0100 .. 0x100F_FFFF  firmware code + read-only data
- *   0x1010_0000 .. 0x101D_FFFF  script storage (896 KB)
- *   0x101E_0000 .. 0x101F_EFFF  config / KV storage (124 KB)
- *   0x101F_F000 .. 0x101F_FFFF  reserved (4 KB)
+ *   0x1000_0100 .. 0x100B_FFFF  firmware (~768 KB)
+ *   0x100C_0000 .. 0x1017_FFFF  OTA staging area (~768 KB)
+ *   0x1018_0000 .. 0x101B_FFFF  script storage (256 KB)
+ *   0x101C_0000 .. 0x101E_FFFF  config / KV storage (192 KB)
+ *   0x101F_0000 .. 0x101F_FFFF  OTA metadata + reserved (64 KB)
  */
 
 MEMORY
 {
     BOOT2 (rx)   : ORIGIN = 0x10000000, LENGTH = 256
-    FLASH (rx)   : ORIGIN = 0x10000100, LENGTH = 1024K - 256
+    FLASH (rx)   : ORIGIN = 0x10000100, LENGTH = 768K - 256
     SRAM  (rwx)  : ORIGIN = 0x20000000, LENGTH = 264K
 }
 
@@ -71,7 +72,11 @@ SECTIONS
     }
 }
 
-_flash_script_base  = 0x10100000;
-_flash_script_size  = 896K;
-_flash_config_base  = 0x101E0000;
-_flash_config_size  = 124K;
+_flash_ota_base     = 0x100C0000;
+_flash_ota_size     = 768K;
+_flash_script_base  = 0x10180000;
+_flash_script_size  = 256K;
+_flash_config_base  = 0x101C0000;
+_flash_config_size  = 192K;
+_flash_ota_meta     = 0x101F0000;
+_flash_ota_meta_sz  = 64K;

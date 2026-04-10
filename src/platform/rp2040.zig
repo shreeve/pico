@@ -52,6 +52,11 @@ pub const XOSC_MHZ: u32 = 12;
 const TIMER_TIMELR = TIMER_BASE + 0x0C;
 const TIMER_TIMEHR = TIMER_BASE + 0x08;
 const TIMER_ALARM0 = TIMER_BASE + 0x10;
+const TIMER_INTE = TIMER_BASE + 0x38;
+const TIMER_INTF = TIMER_BASE + 0x3C;
+const TIMER_INTR = TIMER_BASE + 0x34;
+
+const TICK_INTERVAL_US: u32 = 10_000; // 10ms periodic tick
 
 // ── Reset subsystem ────────────────────────────────────────────────────
 
@@ -192,6 +197,30 @@ pub fn uartPuts(base: u32, s: []const u8) void {
         if (c == '\n') uartWrite(base, '\r');
         uartWrite(base, c);
     }
+}
+
+// ── Periodic timer tick (ALARM0 based, 10ms) ────────────────────────────
+
+pub var tick_count: u32 = 0;
+
+pub fn initPeriodicTick() void {
+    hal.regWrite(TIMER_INTE, 1);
+    rearmAlarm0();
+
+    // Enable TIMER_IRQ_0 (IRQ 0) in NVIC
+    const NVIC_ISER: u32 = 0xE000_E100;
+    hal.regWrite(NVIC_ISER, 1 << 0);
+}
+
+fn rearmAlarm0() void {
+    const lo: u32 = hal.regRead(TIMER_TIMELR);
+    hal.regWrite(TIMER_ALARM0, lo +% TICK_INTERVAL_US);
+}
+
+pub fn timerIrq0Handler() void {
+    hal.regWrite(TIMER_INTR, 1);
+    tick_count +%= 1;
+    rearmAlarm0();
 }
 
 // ── ROM functions ───────────────────────────────────────────────────────

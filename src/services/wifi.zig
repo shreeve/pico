@@ -57,13 +57,28 @@ pub fn init() void {
 }
 
 pub fn connect(ssid: []const u8, password: []const u8) bool {
-    _ = password;
+    if (!cyw43_ready) {
+        console.puts("[wifi] connect failed: driver not ready\n");
+        return false;
+    }
     console.puts("[wifi] connecting to: ");
     console.puts(ssid);
     console.puts("\n");
-    @memcpy(ssid_buf[0..ssid.len], ssid);
-    ssid_len = ssid.len;
+    @memcpy(ssid_buf[0..@min(ssid.len, ssid_buf.len)], ssid[0..@min(ssid.len, ssid_buf.len)]);
+    ssid_len = @min(ssid.len, ssid_buf.len);
     state = .connecting;
+
+    cyw43.core.joinWpa2(ssid, password) catch {
+        console.puts("[wifi] join failed\n");
+        state = .failed;
+        return false;
+    };
+
+    state = .connected;
+    const arp_mod = @import("../net/arp.zig");
+    const dhcp_mod = @import("../net/dhcp.zig");
+    dhcp_mod.start();
+    arp_mod.sendGratuitous();
     return true;
 }
 

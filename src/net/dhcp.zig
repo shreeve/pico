@@ -95,27 +95,32 @@ pub fn tick() void {
     }
 }
 
-/// Called from core.handleDataPacket when an IPv4 packet arrives.
+/// Called from ipv4.handlePacket — receives UDP payload (IP header already stripped).
+pub fn handleUdp(udp_data: []const u8) void {
+    if (dhcp_state == .idle or dhcp_state == .bound) return;
+    if (udp_data.len < 8) return;
+
+    const src_port = (@as(u16, udp_data[0]) << 8) | udp_data[1];
+    const dst_port = (@as(u16, udp_data[2]) << 8) | udp_data[3];
+
+    if (src_port != 67 or dst_port != 68) return;
+    if (udp_data.len < 8 + 236 + 4) return;
+
+    const bootp = udp_data[8..];
+    handleDhcp(bootp);
+}
+
+/// Legacy entry point — accepts raw IPv4 data including IP header.
+/// Kept for any remaining direct callers during transition.
 pub fn handlePacket(ip_data: []const u8) void {
     if (dhcp_state == .idle or dhcp_state == .bound) return;
     if (ip_data.len < 20) return;
 
-    // IPv4 header: protocol at byte 9, IHL in low nibble of byte 0
     const ihl: usize = @as(usize, ip_data[0] & 0x0F) * 4;
-    if (ip_data[9] != 17) return; // not UDP
+    if (ip_data[9] != 17) return;
     if (ip_data.len < ihl + 8) return;
 
-    // UDP header: src_port(2) dst_port(2) length(2) checksum(2)
-    const udp = ip_data[ihl..];
-    const src_port = (@as(u16, udp[0]) << 8) | udp[1];
-    const dst_port = (@as(u16, udp[2]) << 8) | udp[3];
-
-    // DHCP: server port 67 → client port 68
-    if (src_port != 67 or dst_port != 68) return;
-    if (udp.len < 8 + 236 + 4) return; // UDP header + BOOTP fixed + magic cookie
-
-    const bootp = udp[8..];
-    handleDhcp(bootp);
+    handleUdp(ip_data[ihl..]);
 }
 
 // ── DHCP message handling ─────────────────────────────────────────────

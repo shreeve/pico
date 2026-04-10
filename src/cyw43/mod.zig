@@ -13,6 +13,8 @@ pub const regs = @import("regs.zig");
 pub const core = @import("core.zig");
 pub const dhcp = @import("../net/dhcp.zig");
 pub const arp = @import("../net/arp.zig");
+pub const ipv4 = @import("../net/ipv4.zig");
+pub const icmp = @import("../net/icmp.zig");
 
 pub const State = types.State;
 pub const Error = types.Error;

@@ -2,7 +2,7 @@ const regs = @import("../regs.zig");
 const bus = @import("../transport/bus.zig");
 const hal = @import("../../platform/hal.zig");
 const ioctl = @import("../control/ioctl.zig");
-const dhcp = @import("../../net/dhcp.zig");
+const ipv4 = @import("../../net/ipv4.zig");
 const arp = @import("../../net/arp.zig");
 
 pub fn sendEthernet(ctx: *ioctl.Context, frame: []const u8) ioctl.Error!void {
@@ -60,7 +60,7 @@ pub fn handleDataPacket(ctx: *ioctl.Context) void {
     if (ethertype == 0x0800) {
         const ip_off = eth_off + 14;
         if (pkt_size <= ip_off or pkt_size - ip_off < 20) return;
-        dhcp.handlePacket(rx_bytes[ip_off..][0 .. pkt_size - ip_off]);
+        ipv4.handlePacket(rx_bytes[ip_off..][0 .. pkt_size - ip_off]);
     } else if (ethertype == 0x0806) {
         if (eth_payload < 42) return;
         arp.handlePacket(rx_bytes[eth_off..][0..eth_payload]);

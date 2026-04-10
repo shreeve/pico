@@ -19,6 +19,7 @@ const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const memory = @import("runtime/memory.zig");
 const event_loop = @import("runtime/event_loop.zig");
+const watchdog = @import("runtime/watchdog.zig");
 const engine = @import("vm/engine.zig");
 const console = @import("services/console.zig");
 const storage = @import("services/storage.zig");
@@ -99,8 +100,17 @@ pub fn main() noreturn {
     // Delay so picocom can connect after debug probe replug
     hal.delayMs(5000);
 
+    if (watchdog.wasWatchdogReset()) {
+        watchdog.incrementCrashCount();
+    }
+
     puts(BANNER);
     puts("[boot] platform: RP2040 @ 125 MHz\n");
+
+    if (watchdog.shouldEnterSafeMode()) {
+        puts("[boot] SAFE MODE — too many crashes\n");
+        watchdog.clearCrashCount();
+    }
 
     // 3. Memory
     memory.init();
@@ -127,7 +137,10 @@ pub fn main() noreturn {
     };
     puts("[boot] MQuickJS VM ready\n");
 
-    // 6. USB Host (only when built with -DUSB_HOST)
+    // 6. Periodic timer tick (10ms, enables wfe in main loop)
+    rp2040.initPeriodicTick();
+
+    // 7. USB Host (only when built with -DUSB_HOST)
     if (build_config.usb_host) {
         usb_host.init();
         usb_js.initCallbacks();
@@ -146,6 +159,10 @@ pub fn main() noreturn {
     puts("[boot] uptime: ");
     printU64(hal.millis());
     puts(" ms\n");
+    // Start watchdog (8 second timeout)
+    watchdog.init(8000);
+    watchdog.clearCrashCount();
+    puts("[boot] watchdog armed (8s)\n");
     puts("[boot] entering event loop\n\n");
 
     // Event loop with periodic heartbeat
@@ -154,6 +171,7 @@ pub fn main() noreturn {
     while (true) {
         _ = event_loop.step();
         pollUartCmd();
+        watchdog.feed();
 
         const now = hal.millis();
         if (now >= next_heartbeat) {
@@ -166,7 +184,7 @@ pub fn main() noreturn {
             next_heartbeat = now + 5000;
         }
 
-        asm volatile ("nop");
+        asm volatile ("wfe");
     }
 }
 
@@ -235,6 +253,10 @@ fn hang() noreturn {
     while (true) {
         asm volatile ("wfi");
     }
+}
+
+pub fn timerIrq0() void {
+    rp2040.timerIrq0Handler();
 }
 
 pub fn usbIrq() void {

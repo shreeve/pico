@@ -44,11 +44,14 @@ export fn _hard_fault_handler() callconv(CC.c) void {
 // Cortex-M0+ hardware saves r0-r3, r12, lr, pc, xPSR on exception entry
 // and restores on return, so a plain C-ABI function works as an ISR.
 // If root doesn't provide usbIrq, disable the NVIC IRQ to prevent re-entry.
+export fn _timer_irq0_handler() callconv(CC.c) void {
+    @import("root").timerIrq0();
+}
+
 export fn _usb_irq_handler() callconv(CC.c) void {
     if (@hasDecl(@import("root"), "usbIrq")) {
         @import("root").usbIrq();
     } else {
-        // No handler — disable IRQ5 in NVIC to prevent infinite re-entry
         @as(*volatile u32, @ptrFromInt(0xE000_E180)).* = (1 << 5);
     }
 }
@@ -80,7 +83,7 @@ comptime {
         \\.word _default_handler
         \\.word _default_handler
         \\// External IRQs (entries 16-47)
-        \\.word _default_handler
+        \\.word _timer_irq0_handler
         \\.word _default_handler
         \\.word _default_handler
         \\.word _default_handler
