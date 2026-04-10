@@ -27,7 +27,7 @@ const storage = @import("bindings/storage.zig");
 const config = @import("config/device_config.zig");
 const usb_host = @import("usb/host.zig");
 const usb_ftdi = @import("usb/ftdi.zig");
-const usb_js = @import("usb/js.zig");
+const usb_js = @import("bindings/usb.zig");
 
 comptime {
     _ = @import("bindings/console.zig");
@@ -36,7 +36,7 @@ comptime {
     _ = @import("bindings/wifi.zig"); // exports needed by C function table
     _ = @import("bindings/mqtt.zig"); // exports needed by C function table
     _ = @import("bindings/storage.zig");
-    _ = @import("usb/js.zig");
+    _ = @import("bindings/usb.zig");
 }
 
 const BANNER =

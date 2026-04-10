@@ -9,8 +9,8 @@
 
 const std = @import("std");
 const c = @import("../js/quickjs_api.zig");
-const host = @import("host.zig");
-const desc = @import("descriptors.zig");
+const host = @import("../usb/host.zig");
+const desc = @import("../usb/descriptors.zig");
 const engine = @import("../js/runtime.zig");
 const console = @import("../bindings/console.zig");
 
