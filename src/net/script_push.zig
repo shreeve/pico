@@ -5,10 +5,10 @@
 //
 // Implements AppVTable for app-driven TCP interaction.
 
-const console = @import("../services/console.zig");
-const engine = @import("../vm/engine.zig");
-const netif = @import("netif.zig");
-const stack_mod = @import("stack.zig");
+const console = @import("../bindings/console.zig");
+const engine = @import("../js/runtime.zig");
+const netif = @import("global_stack.zig");
+const stack_mod = @import("tcpip.zig");
 
 pub const LISTEN_PORT: u16 = 9001;
 

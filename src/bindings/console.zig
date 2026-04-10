@@ -2,8 +2,8 @@
 // Also serves as the MQuickJS log function sink.
 const std = @import("std");
 const hal = @import("../platform/hal.zig");
-const engine = @import("../vm/engine.zig");
-const c = @import("../vm/c.zig");
+const engine = @import("../js/runtime.zig");
+const c = @import("../js/quickjs_api.zig");
 const CC = std.builtin.CallingConvention;
 
 const UART_BASE = hal.platform.UART0_BASE;

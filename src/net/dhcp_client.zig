@@ -5,7 +5,7 @@
 //
 // Reference: RFC 2131 (DHCP), RFC 791 (IPv4), RFC 768 (UDP)
 
-const core = @import("../cyw43/core.zig");
+const core = @import("../cyw43/device.zig");
 const regs = @import("../cyw43/regs.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;

@@ -5,7 +5,7 @@
 // in Zig with compile-time protocol inclusion and fixed-capacity structures.
 //
 // Usage:
-//   const net = @import("net/stack.zig");
+//   const net = @import("net/tcpip.zig");
 //   const Stack = net.NetStack(.{ .tcp_conn_count = 4, .enable_icmp = true });
 //   var stack: Stack = Stack.init();
 //   stack.tick();
@@ -696,7 +696,7 @@ fn seqGe(a: u32, b: u32) bool {
 }
 
 fn tcpChecksum(seg: []const u8, conn: anytype) u16 {
-    const dhcp = @import("dhcp.zig");
+    const dhcp = @import("dhcp_client.zig");
     var sum: u32 = 0;
 
     sum += (@as(u32, dhcp.ip_addr[0]) << 8) | dhcp.ip_addr[1];

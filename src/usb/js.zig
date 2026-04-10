@@ -8,11 +8,11 @@
 // More bindings will be added as enumeration and transfer support matures.
 
 const std = @import("std");
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 const host = @import("host.zig");
 const desc = @import("descriptors.zig");
-const engine = @import("../vm/engine.zig");
-const console = @import("../services/console.zig");
+const engine = @import("../js/runtime.zig");
+const console = @import("../bindings/console.zig");
 
 // ── Init ───────────────────────────────────────────────────────────────
 

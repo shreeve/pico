@@ -9,10 +9,10 @@
 // Single broker connection, QoS 0 only.
 // Reference: MQTT v3.1.1 (OASIS Standard)
 
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 const console = @import("console.zig");
-const netif = @import("../net/netif.zig");
-const stack_mod = @import("../net/stack.zig");
+const netif = @import("../net/global_stack.zig");
+const stack_mod = @import("../net/tcpip.zig");
 const hal = @import("../platform/hal.zig");
 
 pub const MqttState = enum { disconnected, connecting, connected, error_state };

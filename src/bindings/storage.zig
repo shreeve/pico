@@ -14,9 +14,9 @@
 // data, with write support gated behind a RAM-resident flash driver
 // that will be added when storage.set() is needed in production.
 
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 const console = @import("console.zig");
-const flash = @import("../config/flash.zig");
+const flash = @import("../config/flash_layout.zig");
 
 const MAX_KEY_LEN = 63;
 const MAX_VAL_LEN = 253;

@@ -1,8 +1,8 @@
 /// Wi-Fi provisioning — AP mode captive portal.
 /// When no Wi-Fi credentials are stored, the device creates a soft AP
 /// and serves a simple web page where the user enters SSID + password.
-const console = @import("../services/console.zig");
-const config = @import("../config/config.zig");
+const console = @import("../bindings/console.zig");
+const config = @import("../config/device_config.zig");
 
 pub const AP_SSID = "pico-setup";
 pub const AP_CHANNEL: u8 = 6;

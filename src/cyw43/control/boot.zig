@@ -3,7 +3,7 @@ const bus = @import("../transport/bus.zig");
 const regs = @import("../regs.zig");
 const types = @import("../types.zig");
 const ioctl = @import("ioctl.zig");
-const dhcp = @import("../../net/dhcp.zig");
+const dhcp = @import("../../net/dhcp_client.zig");
 const hal = @import("../../platform/hal.zig");
 
 pub const Context = struct {

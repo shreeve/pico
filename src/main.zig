@@ -11,31 +11,31 @@
 //   8. Start event loop
 
 comptime {
-    _ = @import("platform/boot.zig");
+    _ = @import("platform/startup.zig");
 }
 
 const build_config = @import("build_config");
 const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
-const memory = @import("runtime/memory.zig");
+const memory = @import("runtime/memory_pool.zig");
 const event_loop = @import("runtime/event_loop.zig");
-const netif = @import("net/netif.zig");
+const netif = @import("net/global_stack.zig");
 const watchdog = @import("runtime/watchdog.zig");
-const engine = @import("vm/engine.zig");
-const console = @import("services/console.zig");
-const storage = @import("services/storage.zig");
-const config = @import("config/config.zig");
+const engine = @import("js/runtime.zig");
+const console = @import("bindings/console.zig");
+const storage = @import("bindings/storage.zig");
+const config = @import("config/device_config.zig");
 const usb_host = @import("usb/host.zig");
 const usb_ftdi = @import("usb/ftdi.zig");
 const usb_js = @import("usb/js.zig");
 
 comptime {
-    _ = @import("services/console.zig");
-    _ = @import("services/gpio.zig");
-    _ = @import("services/timer.zig");
-    _ = @import("services/wifi.zig"); // exports needed by C function table
-    _ = @import("services/mqtt.zig"); // exports needed by C function table
-    _ = @import("services/storage.zig");
+    _ = @import("bindings/console.zig");
+    _ = @import("bindings/gpio.zig");
+    _ = @import("bindings/timers.zig");
+    _ = @import("bindings/wifi.zig"); // exports needed by C function table
+    _ = @import("bindings/mqtt.zig"); // exports needed by C function table
+    _ = @import("bindings/storage.zig");
     _ = @import("usb/js.zig");
 }
 
@@ -194,7 +194,7 @@ pub fn main() noreturn {
 }
 
 fn loadStoredScript() void {
-    const flash_layout = @import("config/flash.zig");
+    const flash_layout = @import("config/flash_layout.zig");
     const base = flash_layout.flashToPtr(flash_layout.SCRIPT_BASE);
 
     if (base[0] == 0xFF) {

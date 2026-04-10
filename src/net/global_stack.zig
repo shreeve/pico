@@ -5,7 +5,7 @@
 // call to update stats, access the RX ring, and route TCP segments
 // through the new stack architecture.
 
-const stack_mod = @import("stack.zig");
+const stack_mod = @import("tcpip.zig");
 pub const Stack = stack_mod.NetStack(.{});
 
 var instance: Stack = Stack.init();

@@ -1,6 +1,6 @@
 /// Device configuration — loaded from flash at boot.
-const storage = @import("../services/storage.zig");
-const console = @import("../services/console.zig");
+const storage = @import("../bindings/storage.zig");
+const console = @import("../bindings/console.zig");
 
 pub const Config = struct {
     wifi_ssid: [33]u8 = [_]u8{0} ** 33,

@@ -6,9 +6,9 @@
 //
 // Reference: RFC 826 (ARP)
 
-const core = @import("../cyw43/core.zig");
-const dhcp = @import("dhcp.zig");
-const netif = @import("netif.zig");
+const core = @import("../cyw43/device.zig");
+const dhcp = @import("dhcp_client.zig");
+const netif = @import("global_stack.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
 

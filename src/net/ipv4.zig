@@ -6,11 +6,11 @@
 //
 // Reference: RFC 791 (IPv4)
 
-const dhcp = @import("dhcp.zig");
+const dhcp = @import("dhcp_client.zig");
 const arp_mod = @import("arp.zig");
 const icmp = @import("icmp.zig");
-const netif = @import("netif.zig");
-const core = @import("../cyw43/core.zig");
+const netif = @import("global_stack.zig");
+const core = @import("../cyw43/device.zig");
 
 pub const PROTO_ICMP: u8 = 1;
 pub const PROTO_TCP: u8 = 6;

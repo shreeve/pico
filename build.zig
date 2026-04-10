@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-D_GNU_SOURCE", "-fno-math-errno", "-fno-trapping-math" },
     });
     gen_module.addCSourceFiles(.{
-        .root = b.path("src/vm"),
+        .root = b.path("src/js"),
         .files = &.{"pico_stdlib_gen.c"},
         .flags = &.{ "-D_GNU_SOURCE", "-fno-math-errno", "-fno-trapping-math" },
     });
@@ -145,7 +145,7 @@ pub fn build(b: *std.Build) void {
 
     // Compile the generated stdlib embedding file (includes pico_stdlib.h)
     fw_module.addCSourceFiles(.{
-        .root = b.path("src/vm"),
+        .root = b.path("src/js"),
         .files = &.{"pico_stdlib_data.c"},
         .flags = c_flags,
     });
@@ -293,7 +293,7 @@ pub fn build(b: *std.Build) void {
 
     // Generated stdlib embedding (defines js_stdlib symbol)
     test_main_module.addCSourceFiles(.{
-        .root = b.path("src/vm"),
+        .root = b.path("src/js"),
         .files = &.{ "pico_stdlib_data.c", "pico_bringup.c" },
         .flags = c_flags,
     });

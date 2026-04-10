@@ -10,7 +10,7 @@
 const reg = @import("regs.zig");
 const desc = @import("descriptors.zig");
 const hal = @import("../platform/hal.zig");
-const console = @import("../services/console.zig");
+const console = @import("../bindings/console.zig");
 
 // ── Configuration ──────────────────────────────────────────────────────
 

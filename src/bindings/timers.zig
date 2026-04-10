@@ -1,7 +1,7 @@
 // setTimeout / setInterval / clearTimeout / clearInterval / gc / Date.now
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 const timer = @import("../runtime/timer.zig");
-const engine = @import("../vm/engine.zig");
+const engine = @import("../js/runtime.zig");
 
 const TimerSlot = struct {
     handle: timer.TimerHandle,

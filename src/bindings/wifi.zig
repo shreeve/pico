@@ -1,10 +1,10 @@
 // Wi-Fi service for Pico W / Pico 2 W (CYW43 driver).
 const std = @import("std");
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 const console = @import("console.zig");
-const cyw43 = @import("../cyw43/mod.zig");
+const cyw43 = @import("../cyw43/cyw43.zig");
 const arp_mod = @import("../net/arp.zig");
-const dhcp_mod = @import("../net/dhcp.zig");
+const dhcp_mod = @import("../net/dhcp_client.zig");
 
 pub const WifiState = enum { disconnected, connecting, connected, ap_mode, failed };
 

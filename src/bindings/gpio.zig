@@ -1,6 +1,6 @@
 // GPIO service — exposes gpio.mode / gpio.write / gpio.read / gpio.toggle to JS.
 const hal = @import("../platform/hal.zig");
-const c = @import("../vm/c.zig");
+const c = @import("../js/quickjs_api.zig");
 
 pub const ONBOARD_LED: u5 = 25;
 

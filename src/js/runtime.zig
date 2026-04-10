@@ -1,8 +1,8 @@
 // MQuickJS engine wrapper.
 // Owns the JS context lifecycle, provides safe Zig wrappers
 // around the C API, and wires up the pico native functions.
-const memory = @import("../runtime/memory.zig");
-const c = @import("c.zig");
+const memory = @import("../runtime/memory_pool.zig");
+const c = @import("quickjs_api.zig");
 
 pub const JSValue = c.JSValue;
 pub const JSContext = c.JSContext;

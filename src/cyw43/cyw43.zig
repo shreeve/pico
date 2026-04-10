@@ -1,7 +1,7 @@
 // CYW43 WiFi driver — top-level module.
 //
 // Usage:
-//   const cyw43 = @import("cyw43/mod.zig");
+//   const cyw43 = @import("cyw43/cyw43.zig");
 //   try cyw43.init(.pico_w);     // probe + boot
 //   cyw43.ledSet(true);
 
@@ -10,8 +10,8 @@ pub const types = @import("types.zig");
 pub const bus = @import("transport/bus.zig");
 pub const pio_spi = @import("transport/pio_spi.zig");
 pub const regs = @import("regs.zig");
-pub const core = @import("core.zig");
-pub const dhcp = @import("../net/dhcp.zig");
+pub const core = @import("device.zig");
+pub const dhcp = @import("../net/dhcp_client.zig");
 pub const arp = @import("../net/arp.zig");
 pub const ipv4 = @import("../net/ipv4.zig");
 pub const icmp = @import("../net/icmp.zig");
