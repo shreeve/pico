@@ -25,6 +25,7 @@ const engine = @import("js/runtime.zig");
 const console = @import("bindings/console.zig");
 const storage = @import("bindings/storage.zig");
 const config = @import("config/device_config.zig");
+const wifi = @import("bindings/wifi.zig");
 const usb_host = @import("usb/host.zig");
 const usb_ftdi = @import("usb/ftdi.zig");
 const usb_js = @import("bindings/usb.zig");
@@ -42,7 +43,7 @@ comptime {
 const BANNER =
     \\
     \\  ┌─────────────────────────┐
-    \\  │  pico v0.1.0        │
+    \\  │  pico v0.1.0            │
     \\  │  flash once, script ∞   │
     \\  └─────────────────────────┘
     \\
@@ -141,10 +142,18 @@ pub fn main() noreturn {
     };
     puts("[boot] MQuickJS VM ready\n");
 
-    // 6. Periodic timer tick (10ms, enables wfe in main loop)
+    // 6. WiFi (CYW43 boot — join + DHCP handled by boot.zig if -DSSID set)
+    wifi.init();
+    if (wifi.isConnected()) {
+        puts("[boot] WiFi IP=");
+        if (wifi.getIp()) |ip| puts(ip);
+        puts("\n");
+    }
+
+    // 7. Periodic timer tick (10ms, enables wfe in main loop)
     rp2040.initPeriodicTick();
 
-    // 7. USB Host (only when built with -DUSB_HOST)
+    // 8. USB Host (only when built with -DUSB_HOST)
     if (build_config.usb_host) {
         usb_host.init();
         usb_js.initCallbacks();
@@ -175,6 +184,7 @@ pub fn main() noreturn {
     while (true) {
         _ = event_loop.step();
         pollUartCmd();
+        wifi.poll();
         netif.tick();
         watchdog.feed();
 
