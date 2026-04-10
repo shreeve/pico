@@ -45,6 +45,7 @@ fn printArgs(ctx: *c.JSContext, argc: c_int, argv: ?[*]c.JSValue) void {
         if (i != 0) hal.platform.uartWrite(UART_BASE, ' ');
         printValue(ctx, args[@intCast(i)]);
     }
+    hal.platform.uartWrite(UART_BASE, '\r');
     hal.platform.uartWrite(UART_BASE, '\n');
 }
 
