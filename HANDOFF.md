@@ -1,213 +1,213 @@
-# Session Handoff — USB Host Bring-Up
+# Session Handoff — Pico Firmware
 
-This document captures the full context from the USB host bring-up session so a
-new AI or developer can pick up exactly where we left off.
+This document captures the full context so a new AI or developer can pick
+up exactly where we left off.
 
-## Current State
+## Current State (April 10, 2026)
 
-### Branch: `main`
-- clean, proven on hardware
-- Wi-Fi/DHCP works via build-time credentials:
-  ```bash
-  zig build -DSSID='Shreeve:innovation'
-  ```
-- MQuickJS VM running
-- CYW43 firmware loaded, LED blink proven
-- PLL_USB (48 MHz) and clk_usb now configured in `src/platform/rp2040.zig`
-- USB host code is **not** present on `main`
+### Branch: `main` — proven on hardware
 
-### Branch: `usb-host-zig-core-v1` (archived)
-- first USB host attempt, based on the **older** `misc/pico-usb` reference
-- contains proven hardware fixes but outdated software architecture
-- do NOT use this as a software architecture base going forward
-- DO mine it for hardware-level register knowledge
+Everything is on `main`. No feature branches. Clean working tree.
 
-### Reference code: `misc/picousb` (the CORRECT one)
-- newer, more complete USB host library in C
-- has pipes abstraction, driver model, FTDI setup, ASTM protocol, callbacks
-- **this** is the code that should guide the next Zig USB host implementation
-- the older `misc/pico-usb` was an earlier version and should not be used
+**Validated on real Pico W hardware:**
+- CYW43 WiFi: PIO SPI → firmware upload → scan → WPA2-PSK join → DHCP
+- ICMP echo reply (device responds to `ping`)
+- IPv4 layer with generic demux (ICMP/UDP/TCP), checksum validation, routing
+- ARP client/cache with outbound resolution and gratuitous ARP
+- MQuickJS running JavaScript (`console.log("pico is alive!")`)
+- USB Host with FTDI driver + ASTM protocol for Piccolo Xpress analyzer
+- UART `reboot` command triggers ROM `reset_usb_boot()` for probe-free flashing
+- Watchdog (8s) with crash counter and safe-mode detection
+- 10ms periodic timer interrupt enabling `wfe` idle
 
-## Hardware Setup
+**Not yet validated:**
+- TCP handshake (stack is written, not tested on hardware)
+- MQTT broker connection
+- Script push over TCP port 9001
+- OTA firmware update
+- Flash KV write (read works via XIP, write needs RAM flash driver)
 
-### Boards
-- **Debug probe**: Pico running debugprobe firmware (top board in 3D-printed tray)
-- **Target**: Pico W (bottom board)
-- Connected via SWD + UART
-- Debug probe powers the Pico W
+### Architecture
 
-### USB Host Testing
-- Cable Creation micro-USB to USB-A female adapter: **confirmed passes data**
-- Piccolo Xpress (Abaxis): VID=0x0403, PID=0xCD18, FTDI-based, 9600 8N1
-- Piccolo has its own power supply; provides 5V on its USB-B port
-- Best test setup: Piccolo's USB-A power cable provides VBUS, data cable
-  connects through OTG adapter to Pico W micro-USB
-
-### Build and Flash Commands
-```bash
-# Build (with Wi-Fi credentials for full boot)
-zig build -DSSID='Shreeve:innovation'
-
-# Build (without Wi-Fi, for USB-only work)
-zig build
-
-# Flash
-openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
-  -c "adapter speed 1000; program zig-out/bin/pico verify reset exit"
-
-# Reset only (when flash is already current)
-openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
-  -c "adapter speed 1000; reset_config none; init; reset run; shutdown"
-
-# Serial
-picocom -b 115200 --noreset /dev/cu.usbmodem201202
+```
+┌──────────────────────────────────────┐
+│         User Scripts (JS)            │
+├──────────────────────────────────────┤
+│       MQuickJS Runtime (C)           │
+├──────────────────────────────────────┤
+│     pico Runtime (Zig)               │
+│  event loop · timers · scheduler     │
+├──────────────────────────────────────┤
+│       Bindings (Zig → JS)            │
+│  wifi · mqtt · gpio · timers · uart  │
+│  spi · i2c · usb · storage · console │
+├──────────────────────────────────────┤
+│     Net Stack (Zig)                  │
+│  tcpip · ipv4 · icmp · arp · dhcp   │
+├──────────────────────────────────────┤
+│     HAL / Drivers (Zig)              │
+│  RP2040 · CYW43 · USB Host · FTDI   │
+├──────────────────────────────────────┤
+│           Hardware                   │
+└──────────────────────────────────────┘
 ```
 
-### Recovery from wedged SWD/serial
-1. close picocom
-2. replug the debug probe
-3. if needed, hold BOOTSEL on the Pico W during reconnect
-4. reopen picocom
-5. reflash or reset
+### Source Tree
 
-## Proven Hardware Facts (carry these forward)
+```
+src/
+├── main.zig                  Entry point + boot flow
+├── test_support.zig          Test harness re-exports
+├── bindings/                 JS API bindings
+│   ├── console.zig           UART + console.log
+│   ├── gpio.zig              GPIO JS bindings
+│   ├── timers.zig            setTimeout/setInterval JS
+│   ├── wifi.zig              WiFi management + JS
+│   ├── mqtt.zig              MQTT client via AppVTable + JS
+│   ├── storage.zig           Flash KV + JS
+│   ├── uart.zig              UART peripheral
+│   ├── usb.zig               USB host JS bindings
+│   ├── spi.zig               SPI stub
+│   └── i2c.zig               I2C stub
+├── net/                      Network stack
+│   ├── tcpip.zig             Comptime NetStack(Config) — TCP state machine
+│   ├── global_stack.zig      Singleton stack instance bridge
+│   ├── ipv4.zig              IPv4 parse/route/send + stats
+│   ├── icmp.zig              Echo reply (ping)
+│   ├── arp.zig               ARP responder + 8-entry client cache
+│   ├── dhcp_client.zig       DHCP client with lease renewal
+│   └── script_push.zig       Script push protocol (TCP port 9001)
+├── cyw43/                    CYW43439 WiFi driver
+│   ├── cyw43.zig             Public API module
+│   ├── device.zig            Full lifecycle facade
+│   ├── board.zig             Pin maps and reset
+│   ├── regs.zig              gSPI register definitions
+│   ├── types.zig             State enum + Error set
+│   ├── control/              Boot, IOCTL, scan, join, GPIO
+│   ├── transport/            PIO SPI + gSPI bus
+│   ├── protocol/             WLAN event parsing
+│   ├── netif/                Ethernet TX/RX + service loop
+│   └── firmware/             Binary blobs
+├── platform/                 HAL + startup
+│   ├── hal.zig               Chip detect + register helpers
+│   ├── rp2040.zig            RP2040 drivers (clocks, UART, GPIO, timer, ROM)
+│   ├── rp2350.zig            RP2350 drivers
+│   ├── startup.zig           Vector table + BSS/data init
+│   └── *.ld                  Linker scripts
+├── runtime/                  Core runtime
+│   ├── event_loop.zig        Cooperative event loop
+│   ├── scheduler.zig         Task queue
+│   ├── timer.zig             Software timers
+│   ├── memory_pool.zig       Fixed memory pool
+│   ├── panic.zig             Fault handler
+│   └── watchdog.zig          Watchdog with crash counter
+├── config/                   Configuration
+│   ├── device_config.zig     Device config from flash
+│   └── flash_layout.zig      Flash regions and addresses
+├── js/                       MQuickJS integration
+│   ├── runtime.zig           JS engine wrapper
+│   ├── quickjs_api.zig       Zig bindings for C API
+│   └── *.c                   C sources (stdlib gen, bringup)
+├── usb/                      USB host stack
+│   ├── host.zig              Host controller
+│   ├── regs.zig              USB register addresses
+│   ├── descriptors.zig       USB descriptor types
+│   ├── ftdi.zig              FTDI USB-to-serial driver
+│   └── astm.zig              ASTM E1394 medical protocol parser
+├── provisioning/
+│   └── captive_portal.zig    WiFi AP-mode provisioning (stub)
+└── libc/                     Freestanding C stubs
+```
 
-### RP2040 USB Clock Requirement
-- `PLL_USB` must be configured at 48 MHz before USBCTRL can come out of reset
-- `clk_usb` must be enabled and sourced from PLL_USB
-- without this, `RESET_DONE` for USBCTRL will never assert
-- **this fix is now on `main`** in `src/platform/rp2040.zig`
+### TCP/IP Stack Design (uIP-inspired)
 
-### USB Host Register Configuration
-- `USB_MUXING` = `TO_PHY | SOFTCON` (0x00000009)
-- `USB_PWR` needs `VBUS_DETECT_OVERRIDE_VALUE` set, not just `VBUS_DETECT` and
-  `VBUS_DETECT_OVERRIDE_EN`. Without the override value, the controller thinks
-  VBUS is absent and never detects device attachment.
-- Recommended host-mode USB_PWR:
-  ```
-  VBUS_DETECT | VBUS_DETECT_OVERRIDE_EN | VBUS_DETECT_OVERRIDE_VALUE |
-  OVERCURR_DETECT | OVERCURR_DETECT_EN
-  ```
-- `MAIN_CTRL` = `CONTROLLER_EN | HOST_NDEVICE` (0x00000003)
-- `SIE_CTRL` host base = `PULLDOWN_EN | VBUS_EN | KEEP_ALIVE_EN | SOF_EN`
-  - readback may show only PULLDOWN_EN | SOF_EN (bits 4,5 are non-latching)
-  - this is expected RP2040 behavior, not a bug
+The network stack in `net/tcpip.zig` uses a comptime-parameterized design:
 
-### SIE_STATUS Speed Bits Are W1C
-- the ISR must capture speed from `SIE_STATUS` **before** clearing
-- after clearing, speed reads as zero
-- pass the captured speed through the event queue to the main loop
-- do NOT re-read SIE_STATUS for speed after the ISR has cleared it
+```zig
+const Stack = NetStack(.{ .tcp_conn_count = 4, .enable_icmp = true });
+```
 
-### Bus Reset Behavior
-- bus reset (SE0 for 50ms) causes spurious connect/disconnect at electrical level
-- must mask `HOST_CONN_DIS` interrupt during bus reset
-- must disable NVIC USB IRQ during bus reset to prevent ISR from firing
-- after bus reset, clear all SIE_STATUS, flush event queue, then re-enable
-- device connect was proven on hardware with this approach
+Key design principles:
+- **App-driven retransmission**: stack stores no payload. Apps implement
+  `AppVTable` with a `produce_tx()` callback that regenerates data on retransmit.
+- **Stop-and-wait**: one unacked segment per connection, no sliding window.
+- **Multi-connection**: fixed array of N connections (default 4) + listener table.
+- **Work flags**: per-connection `ack_due`, `tx_ready`, `retx_due`, `close_due`
+  processed deterministically in `tcpPollOutput()`.
+- **19 observability counters**: ip_rx, ip_bad_checksum, arp_hits/misses, tcp_retx, etc.
+- **Zero dynamic allocation**: all buffers are static, compile-time sized.
 
-### USBCTRL Reset State
-- on warm restart, USBCTRL may already be held in reset (bit 24 of RESETS)
-- if so, clearing the reset bit and waiting for RESET_DONE may hang
-  without PLL_USB/clk_usb running
-- the archived branch has diagnostic code for detecting and recovering
-  from this condition
+### Flash Layout (RP2040, 2 MB)
 
-## What the Archived Branch (`usb-host-zig-core-v1`) Contains
+```
+0x10000000  BOOT2          256 bytes
+0x10000100  Firmware       ~768 KB
+0x100C0000  OTA Staging    ~768 KB
+0x10180000  Scripts        256 KB
+0x101C0000  Config/KV      192 KB
+0x101F0000  OTA Metadata   64 KB
+```
 
-### Worth mining
-- `src/platform/rp2040.zig`: PLL_USB + clk_usb init (already on `main`)
-- `src/usb/regs.zig`: USB register definitions and PWR_HOST_MODE constant
-- `src/usb/host.zig`: ISR event queue, NVIC handling, reset diagnostics,
-  bus reset with interrupt masking, device speed detection
-- `src/usb/descriptors.zig`: safe descriptor parsing helpers
-- `src/usb/js.zig`: MQuickJS bindings for USB host
+## Build and Flash
 
-### Do NOT reuse as architecture
-- the transfer/control model was based on the older `pico-usb` reference
-- the newer `picousb` has a significantly better architecture:
-  - pipes instead of raw endpoints
-  - driver registration model
-  - per-transfer callbacks
-  - FTDI device setup
-  - ASTM protocol handling
-  - proper command() helper for synchronous control transfers
+```bash
+# Development build (no WiFi, USB as device for flashing)
+zig build uf2
 
-## What Was Proven on Hardware
+# WiFi build
+zig build uf2 -DSSID='NetworkName:Password'
 
-In chronological order:
-1. USB controller init completes (all 13 breadcrumb steps pass)
-2. Device connect interrupt fires when USB device is plugged in
-3. Device speed is correctly detected as full-speed
-4. Bus reset completes cleanly without disconnect storm
-5. System remains stable in event loop after bus reset
-6. Multiple connect/disconnect cycles work reliably
+# USB host build (for Piccolo Xpress)
+zig build uf2 -DUSB_HOST
 
-## What Was NOT Yet Proven
-- EP0 control transfer (GET_DESCRIPTOR)
-- SET_ADDRESS
-- Full enumeration
-- FTDI device setup
-- Bulk data transfer
-- Piccolo ASTM protocol communication
+# Combined WiFi + USB host
+zig build uf2 -DSSID='NetworkName:Password' -DUSB_HOST
 
-## Next Steps (for the new USB host branch)
+# Flash (type "reboot" in picocom first, then):
+picotool load -v -x zig-out/firmware/pico.uf2
 
-1. Fork from `main` (which now has PLL_USB/clk_usb)
-2. Study `misc/picousb/src/picousb.c` and `picousb.h` deeply
-3. Build the Zig USB host layer following the `picousb` architecture
-4. Carry forward the hardware register knowledge from above
-5. Start with: init → detect → bus reset → GET_DESCRIPTOR(8) → SET_ADDRESS
-6. Then: full enumeration → FTDI setup → bulk transfer → ASTM protocol
+# Serial console
+picocom -b 115200 --noreset /dev/cu.usbserial-0001
+```
 
-## Key Files to Read
+### Hardware Setup
 
-### New reference (USE THIS)
-- `misc/picousb/src/picousb.c` — the full USB host library
-- `misc/picousb/src/picousb.h` — types, structs, API
-- `misc/picousb/src/main.c` — Piccolo-specific application code
-- `misc/picousb/src/usb_common.h` — USB 2.0 constants
-- `misc/picousb/docs/enumeration.md` — enumeration log
-- `misc/picousb/docs/usb-overview.md` — USB protocol reference
+Two USB cables to Mac:
+1. **CP2102** (USB-to-serial) → Pico W GP0/GP1 (UART TX/RX/GND)
+2. **USB-C** → Pico W (power + UF2 flashing)
 
-### Old reference (for hardware behavior only)
-- `misc/pico-usb/host/host.c` — older version, less complete
-- `misc/pico-usb/usb-rp2040.md` — RP2040 USB register documentation
+Optional: Raspberry Pi Debug Probe for SWD (not needed for normal dev).
 
-### Project documentation
-- `AGENTS.md` — AI agent instructions and RP2040 gotchas
-- `NETWORKING.md` — Wi-Fi/DHCP status
-- `CYW43.md` — CYW43 bring-up reference
-- `ISSUES.md` — known issues
+### Flash Workflow
 
-### Archived USB work (for register-level reference)
-- `usb-host-zig-core-v1` branch
-- `src/usb/AI-AUDIT.md` (on archived branch) — detailed audit of the first attempt
-- `misc/pico-usb/AI-REVIEW.md` — review of the old C code
+1. Type `reboot` in picocom → device enters BOOTSEL mode
+2. `zig build uf2 && picotool load -v -x zig-out/firmware/pico.uf2`
+3. Device reboots, picocom shows boot banner
+
+No debug probe, no BOOTSEL button, no OpenOCD.
+
+## What Is Next
+
+1. **Test TCP handshake** on hardware — connect to a server or accept connection
+2. **Test MQTT** end-to-end with Mosquitto broker
+3. **Integrate BearSSL** for TLS (MQTT over port 8883, HTTPS for OTA)
+4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
+5. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
+6. **Production security**: signed updates, authenticated script upload, JS sandboxing
 
 ## Piccolo Xpress Details
 
 - Manufacturer: Abaxis Inc.
 - Product: piccolo xpress
-- Serial: AVP09880
-- VID: 0x0403 (FTDI)
-- PID: 0xCD18
-- USB class: vendor-specific (FTDI, not standard CDC ACM)
+- VID: 0x0403 (FTDI), PID: 0xCD18
 - Communication: 9600 8N1 over FTDI USB serial
-- Protocol: ASTM (laboratory instrument data protocol)
-- Has its own power supply (independent of USB VBUS)
-- Sends structured text data including test results, hex blocks, timestamps
+- Protocol: ASTM E1394 (laboratory data, ENQ/ACK/EOT framing)
+- Has its own power supply
 
-## Debug Probe DX Issues
+## Key Documentation
 
-The Pico Debug probe's USB-CDC serial bridge is fragile:
-- OpenOCD flash/reset cycles can wedge the UART bridge
-- picocom shows "Terminal ready" but no data
-- fix: replug the debug probe
-- the `reset_config none` variant of the reset command is more reliable
-- do NOT use `stty` + `cat` for serial on macOS (corrupts CDC state)
-- always use picocom
-
-A smarter debug probe with target power control would dramatically
-improve DX. The 3D-printed tray already has the right physical layout;
-it just needs a load switch for target power and a GPIO for target RUN.
+- `AGENTS.md` — AI agent instructions and RP2040 gotchas
+- `NETWORKING.md` — WiFi/networking status and architecture
+- `CYW43.md` — CYW43 bring-up reference
+- `PICO.md` — Host-side CLI tool vision
+- `ZIG-0.15.2.md` — Zig language reference
