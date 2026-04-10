@@ -4,6 +4,11 @@
 // Enough for MQTT (single broker connection) and script push.
 // No concurrent streams, no fancy congestion control.
 //
+// Known gap: data segment retransmission is not yet implemented.
+// Only SYN retransmission exists. This will be replaced by a
+// uIP-inspired app-driven retransmit model (produce_tx callback
+// with segment tokens, zero stack payload buffering).
+//
 // Reference: RFC 793 (TCP), RFC 1122 (host requirements)
 
 const ipv4 = @import("ipv4.zig");

@@ -2,9 +2,11 @@
 //
 // Uses an append-log format in the CONFIG flash region. Each entry is:
 //   [1 byte key_len] [1 byte val_len] [key bytes] [val bytes]
-// A val_len of 0xFF means "deleted." Entries are appended; the last
-// entry for a key wins. When the region fills, a compaction pass
-// rewrites live entries to the start of the region.
+//
+// Append-only semantics: new values for a key are appended as new
+// entries; the last entry for a key wins. A val_len of 0xFF is a
+// delete tombstone — it has zero value bytes following it (no payload
+// to skip). An erased region (all 0xFF) marks end-of-log.
 //
 // Flash reads are via XIP (direct pointer). Flash writes require the
 // RP2040 ROM flash routines executed from RAM with interrupts disabled.

@@ -64,6 +64,27 @@ Air ↔ CYW43 ↔ PIO SPI ↔ gSPI ↔ SDPCM/BDC ↔ Ethernet
 0x101F0000  OTA Metadata   64 KB   (version, hash, commit flag)
 ```
 
+## Reference boot log
+
+```text
+[cyw43] SPI OK
+[cyw43] ALP clock OK
+[cyw43] verify OK
+[cyw43] HT clock OK — firmware running
+[cyw43] F2 ready
+[cyw43] MAC=28:cd:c1:10:3e:1b
+[cyw43] CLM loaded
+[cyw43] LED blink OK
+[cyw43] WiFi UP
+[scan] 8 networks found:
+  -38 dBm  c6:50:9c:9e:fc:69  Shreeve
+  ...
+[join] associated!
+[dhcp] offer 10.0.0.27 from 10.0.0.1
+[dhcp] bound 10.0.0.27 gw 10.0.0.1 mask 255.255.255.0
+[wifi] IP=10.0.0.27
+```
+
 ## What is next
 
 1. **Validate on hardware**: ARP client, ICMP echo, TCP handshake

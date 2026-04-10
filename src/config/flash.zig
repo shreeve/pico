@@ -4,10 +4,18 @@
 /// RP2040 layout (2 MB):
 ///   0x1000_0000 .. 0x1000_00FF  boot2 (256 bytes)
 ///   0x1000_0100 .. 0x100B_FFFF  firmware (~768 KB)
-///   0x100C_0000 .. 0x1017_FFFF  OTA staging area (~768 KB)
-///   0x1018_0000 .. 0x101B_FFFF  script storage (256 KB)
-///   0x101C_0000 .. 0x101E_FFFF  config / KV storage (192 KB)
-///   0x101F_0000 .. 0x101F_FFFF  OTA metadata + reserved (64 KB)
+///   0x100C_0000 .. 0x1017_FFFF  OTA staging (~768 KB)
+///   0x1018_0000 .. 0x101B_FFFF  scripts (256 KB)
+///   0x101C_0000 .. 0x101E_FFFF  config/KV (192 KB)
+///   0x101F_0000 .. 0x101F_FFFF  OTA metadata (64 KB)
+///
+/// RP2350 layout (4 MB):
+///   0x1000_0000 .. 0x1000_00FF  boot2 (256 bytes)
+///   0x1000_0100 .. 0x101F_FFFF  firmware (~2 MB)
+///   0x1020_0000 .. 0x102F_FFFF  OTA staging (1 MB)
+///   0x1030_0000 .. 0x1037_FFFF  scripts (512 KB)
+///   0x1038_0000 .. 0x103B_FFFF  config/KV (256 KB)
+///   0x103C_0000 .. 0x103C_FFFF  OTA metadata (64 KB)
 const hal = @import("../platform/hal.zig");
 
 pub const FLASH_BASE = hal.platform.FLASH_BASE;

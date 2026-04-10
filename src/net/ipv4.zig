@@ -60,7 +60,7 @@ fn isForUs(dst: []const u8) bool {
     const local = ipToU32(&dhcp.ip_addr);
     const mask = ipToU32(&dhcp.subnet_mask);
     const d = ipToU32(dst[0..4]);
-    if (d == (local & mask) | ~mask) return true;
+    if (d == ((local & mask) | ~mask)) return true;
 
     return false;
 }

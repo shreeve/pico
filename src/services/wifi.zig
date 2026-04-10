@@ -3,6 +3,8 @@ const std = @import("std");
 const c = @import("../vm/c.zig");
 const console = @import("console.zig");
 const cyw43 = @import("../cyw43/mod.zig");
+const arp_mod = @import("../net/arp.zig");
+const dhcp_mod = @import("../net/dhcp.zig");
 
 pub const WifiState = enum { disconnected, connecting, connected, ap_mode, failed };
 
@@ -75,8 +77,6 @@ pub fn connect(ssid: []const u8, password: []const u8) bool {
     };
 
     state = .connected;
-    const arp_mod = @import("../net/arp.zig");
-    const dhcp_mod = @import("../net/dhcp.zig");
     dhcp_mod.start();
     arp_mod.sendGratuitous();
     return true;

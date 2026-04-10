@@ -20,17 +20,18 @@ const MAGIC: u32 = 0x57444F47; // "WDOG"
 const MAX_CRASHES_BEFORE_SAFE_MODE = 3;
 
 var enabled = false;
+var reload_val: u32 = 0;
 
 pub fn init(timeout_ms: u32) void {
-    const load_val = timeout_ms * 1000;
-    hal.regWrite(WATCHDOG_LOAD, load_val);
-    hal.regWrite(WATCHDOG_CTRL, (1 << 30) | load_val);
+    reload_val = timeout_ms * 1000;
+    hal.regWrite(WATCHDOG_LOAD, reload_val);
+    hal.regWrite(WATCHDOG_CTRL, (1 << 30) | reload_val);
     enabled = true;
 }
 
 pub fn feed() void {
     if (!enabled) return;
-    hal.regWrite(WATCHDOG_LOAD, hal.regRead(WATCHDOG_CTRL) & 0x00FFFFFF);
+    hal.regWrite(WATCHDOG_LOAD, reload_val);
 }
 
 pub fn wasWatchdogReset() bool {
