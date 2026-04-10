@@ -10,6 +10,7 @@ const dhcp = @import("dhcp.zig");
 const arp_mod = @import("arp.zig");
 const icmp = @import("icmp.zig");
 const tcp = @import("tcp.zig");
+const netif = @import("netif.zig");
 const core = @import("../cyw43/core.zig");
 
 pub const PROTO_ICMP: u8 = 1;
@@ -17,6 +18,9 @@ pub const PROTO_TCP: u8 = 6;
 pub const PROTO_UDP: u8 = 17;
 
 pub fn handlePacket(ip_data: []const u8) void {
+    const s = netif.get();
+    s.stats.ip_rx += 1;
+
     if (ip_data.len < 20) return;
 
     const version = ip_data[0] >> 4;
@@ -25,25 +29,45 @@ pub fn handlePacket(ip_data: []const u8) void {
     const ihl: usize = @as(usize, ip_data[0] & 0x0F) * 4;
     if (ihl < 20 or ip_data.len < ihl) return;
 
-    if (!validHeaderChecksum(ip_data[0..ihl])) return;
+    if (!validHeaderChecksum(ip_data[0..ihl])) {
+        s.stats.ip_bad_checksum += 1;
+        return;
+    }
 
     const total_len = (@as(usize, ip_data[2]) << 8) | ip_data[3];
-    if (total_len < ihl or total_len > ip_data.len) return;
+    if (total_len < ihl or total_len > ip_data.len) {
+        s.stats.ip_bad_len += 1;
+        return;
+    }
 
     if (!isForUs(ip_data[16..20])) return;
 
     const frag_off = ((@as(u16, ip_data[6]) & 0x1F) << 8) | ip_data[7];
     const mf = (ip_data[6] & 0x20) != 0;
-    if (frag_off != 0 or mf) return;
+    if (frag_off != 0 or mf) {
+        s.stats.ip_fragmented_drop += 1;
+        return;
+    }
 
     const protocol = ip_data[9];
     const payload = ip_data[ihl..total_len];
     const src_ip = ip_data[12..16];
 
     switch (protocol) {
-        PROTO_ICMP => icmp.handlePacket(src_ip, payload),
-        PROTO_UDP => dhcp.handleUdp(payload),
-        PROTO_TCP => tcp.handleSegment(src_ip, payload),
+        PROTO_ICMP => {
+            s.stats.icmp_rx += 1;
+            icmp.handlePacket(src_ip, payload);
+        },
+        PROTO_UDP => {
+            s.stats.udp_rx += 1;
+            dhcp.handleUdp(payload);
+        },
+        PROTO_TCP => {
+            var src_arr: [4]u8 = undefined;
+            @memcpy(&src_arr, src_ip[0..4]);
+            s.tcpInput(src_arr, payload);
+            tcp.handleSegment(src_ip, payload);
+        },
         else => {},
     }
 }

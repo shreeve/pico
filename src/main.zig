@@ -19,8 +19,7 @@ const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const memory = @import("runtime/memory.zig");
 const event_loop = @import("runtime/event_loop.zig");
-const net_stack = @import("net/stack.zig");
-const NetStack = net_stack.NetStack(.{});
+const netif = @import("net/netif.zig");
 const watchdog = @import("runtime/watchdog.zig");
 const engine = @import("vm/engine.zig");
 const console = @import("services/console.zig");
@@ -109,7 +108,7 @@ pub fn main() noreturn {
     puts(BANNER);
     puts("[boot] platform: RP2040 @ 125 MHz\n");
     puts("[boot] net stack: ");
-    printU32(@intCast(NetStack.memoryUsage()));
+    printU32(@intCast(netif.Stack.memoryUsage()));
     puts(" bytes\n");
 
     if (watchdog.shouldEnterSafeMode()) {
@@ -176,6 +175,7 @@ pub fn main() noreturn {
     while (true) {
         _ = event_loop.step();
         pollUartCmd();
+        netif.tick();
         watchdog.feed();
 
         const now = hal.millis();

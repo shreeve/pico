@@ -8,6 +8,7 @@
 
 const core = @import("../cyw43/core.zig");
 const dhcp = @import("dhcp.zig");
+const netif = @import("netif.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
 
@@ -35,11 +36,13 @@ pub fn resolve(ip: [4]u8) ?[6]u8 {
     for (&cache) |*entry| {
         if (entry.valid and ipEq(&entry.ip, &ip)) {
             if (now - entry.timestamp_ms < ENTRY_TTL_MS) {
+                netif.get().stats.arp_hits += 1;
                 return entry.mac;
             }
             entry.valid = false;
         }
     }
+    netif.get().stats.arp_misses += 1;
     sendRequest(ip);
     return null;
 }
@@ -60,6 +63,7 @@ pub fn sendGratuitous() void {
 // ── Inbound handling ─────────────────────────────────────────────────
 
 pub fn handlePacket(eth_frame: []const u8) void {
+    netif.get().stats.arp_rx += 1;
     if (eth_frame.len < 42) return;
 
     const a = eth_frame[14..];
