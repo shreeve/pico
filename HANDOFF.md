@@ -12,7 +12,12 @@ Everything is on `main`. No feature branches.
 **Validated on real Pico W hardware:**
 - CYW43 WiFi: PIO SPI → firmware upload → scan → WPA2-PSK join → DHCP
 - ICMP echo reply (device responds to `ping`)
+- TCP: full handshake, bidirectional data, MSS negotiation, clean teardown
+  (72 segments received, 31 sent, 0 retransmissions in test session)
+- Telnet shell on port 23: interactive remote console over WiFi
+- JavaScript eval over WiFi: `eval 2 + 2` returns `4` via telnet
 - IPv4 layer with generic demux (ICMP/UDP/TCP), checksum validation, routing
+- UDP listener dispatch: DHCP registers on port 68, stack routes by port
 - ARP client/cache with outbound resolution and gratuitous ARP
 - MQuickJS running JavaScript (`console.log("pico is alive!")`)
 - USB Host with FTDI driver + ASTM protocol for Piccolo Xpress analyzer
@@ -21,9 +26,9 @@ Everything is on `main`. No feature branches.
 - 10ms periodic timer interrupt enabling `wfe` idle
 
 **Not yet validated on hardware:**
-- TCP handshake (stack is written and hardened, not tested on hardware)
-- MQTT broker connection
-- Script push over TCP port 9001
+- MQTT broker connection (client code exists, TCP is proven)
+- Script push over TCP port 9001 (listener registered, untested)
+- TLS (BearSSL integration planned — see "What Is Next")
 - OTA firmware update
 - Flash KV write (read works via XIP, write needs RAM flash driver)
 
@@ -103,6 +108,7 @@ src/
 │   ├── icmp.zig              Echo reply (ping)
 │   ├── arp.zig               ARP responder + 8-entry client cache
 │   ├── dhcp.zig              DHCP client with lease renewal
+│   ├── shell.zig             Telnet shell (port 23) — remote console + JS eval
 │   └── script_push.zig       Script push protocol (TCP port 9001)
 ├── cyw43/                    CYW43439 WiFi driver
 │   ├── cyw43.zig             Public API module
