@@ -146,9 +146,8 @@ pub fn main() noreturn {
     watchdog.init(8000);
     watchdog.clearCrashCount();
     puts("[boot] watchdog armed (8s)\n");
-    puts("[boot] entering event loop\n\n");
+    puts("[boot] entering superloop\n\n");
 
-    // Event loop with periodic heartbeat
     var heartbeat: u32 = 0;
     var next_heartbeat = hal.millis() + 5000;
     // Cooperative superloop: all forward progress happens here.

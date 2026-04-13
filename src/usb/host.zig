@@ -961,7 +961,7 @@ pub fn isr() void {
     }
 }
 
-// ── Task processing (called from event loop) ───────────────────────────
+// ── Task processing (called from superloop) ─────────────────────────────
 
 fn processTask() void {
     if (taskDequeue()) |task| {
@@ -1087,7 +1087,7 @@ pub fn deinit() void {
     initialized = false;
 }
 
-// ── Poll (called from event loop) ──────────────────────────────────────
+// ── Poll (called from superloop) ────────────────────────────────────────
 
 pub fn poll() void {
     processTask();

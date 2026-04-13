@@ -69,7 +69,7 @@ No debug probe or BOOTSEL button needed:
 │       MQuickJS Runtime (C)           │
 ├──────────────────────────────────────┤
 │     pico Runtime (Zig)               │
-│  event loop · timers · scheduler     │
+│  superloop · timers · scheduler      │
 ├──────────────────────────────────────┤
 │       Bindings (Zig → JS)            │
 │  wifi · mqtt · gpio · timers · uart  │
@@ -100,7 +100,7 @@ pico/
 │   │   ├── startup.zig    Vector table + BSS/data init
 │   │   └── *.ld           Linker scripts
 │   ├── runtime/           Core runtime
-│   │   ├── event_loop.zig Cooperative event loop
+│   │   ├── poll.zig       Cooperative polling runtime
 │   │   ├── scheduler.zig  Task scheduler
 │   │   ├── timer.zig      Software timers
 │   │   ├── memory_pool.zig Fixed memory pool
@@ -174,7 +174,7 @@ pico/
 ## Roadmap
 
 - [x] Platform HAL (RP2040 + RP2350) proven on hardware
-- [x] Runtime core (event loop, timers, scheduler, watchdog)
+- [x] Runtime core (cooperative superloop, timers, scheduler, watchdog)
 - [x] MQuickJS integration + JS execution on hardware
 - [x] CYW43 WiFi driver (PIO SPI → scan → join → DHCP)
 - [x] Custom IPv4/ICMP/ARP stack — device responds to ping

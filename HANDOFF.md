@@ -47,7 +47,7 @@ Major refactoring and hardening pass across the network stack:
 7. **MSS option** — SYN/SYN-ACK include 4-byte MSS option advertising 1460
 8. **ARP-pending deferred retry** — `emitSegment()` returns `EmitResult`;
    `retryArpPending()` with per-connection cooldown prevents first-segment loss
-9. **Event loop simplified** — timers and deferred callbacks only; device
+9. **Superloop clarified** — poll.zig handles timers and deferred callbacks only; device
    polling is explicit in main loop; documented cooperative scheduling contract
 10. **34 host-side unit tests** — sequence arithmetic, checksums, byte-order,
     MSS encoding, mix32 avalanche; run with `zig build test`
@@ -61,7 +61,7 @@ Major refactoring and hardening pass across the network stack:
 │       MQuickJS Runtime (C)           │
 ├──────────────────────────────────────┤
 │     pico Runtime (Zig)               │
-│  event loop · timers · scheduler     │
+│  superloop · timers · scheduler      │
 ├──────────────────────────────────────┤
 │       Bindings (Zig → JS)            │
 │  wifi · mqtt · gpio · timers · uart  │
@@ -122,7 +122,7 @@ src/
 │   ├── startup.zig           Vector table + BSS/data init
 │   └── *.ld                  Linker scripts
 ├── runtime/                  Core runtime
-│   ├── event_loop.zig        Timers + deferred callbacks (not device polling)
+│   ├── poll.zig              Timers + deferred callbacks (not device polling)
 │   ├── scheduler.zig         Task queue
 │   ├── timer.zig             Software timers
 │   ├── memory_pool.zig       Fixed memory pool

@@ -1,6 +1,6 @@
 /// Software timer management.
 /// Provides setTimeout / setInterval semantics backed by the hardware
-/// microsecond counter.  Timer callbacks are invoked from the event loop,
+/// microsecond counter.  Timer callbacks are invoked from the superloop,
 /// never from interrupt context.
 const hal = @import("../platform/hal.zig");
 
@@ -45,7 +45,7 @@ pub fn clearTimer(handle: TimerHandle) void {
     }
 }
 
-/// Called from the event loop each iteration.
+/// Called from the superloop each iteration.
 pub fn processPending() void {
     const now = hal.millis();
     for (&timers) |*t| {

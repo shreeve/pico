@@ -1,6 +1,6 @@
 // Watchdog timer — resets the device if the main loop stalls.
 //
-// Uses the RP2040's built-in watchdog peripheral. The main event loop
+// Uses the RP2040's built-in watchdog peripheral. The main superloop
 // must call feed() periodically. If it doesn't (hung JS, network flood,
 // hardware fault), the watchdog resets the MCU.
 //
