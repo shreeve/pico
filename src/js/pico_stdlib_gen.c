@@ -333,6 +333,18 @@ static const JSPropDef js_gpio[] = {
 static const JSClassDef js_gpio_obj =
     JS_OBJECT_DEF("gpio", js_gpio);
 
+/* led */
+static const JSPropDef js_led[] = {
+    JS_CFUNC_DEF("on", 0, js_led_on),
+    JS_CFUNC_DEF("off", 0, js_led_off),
+    JS_CFUNC_DEF("toggle", 0, js_led_toggle),
+    JS_CFUNC_DEF("blink", 1, js_led_blink),
+    JS_CFUNC_DEF("isOn", 0, js_led_isOn),
+    JS_PROP_END,
+};
+static const JSClassDef js_led_obj =
+    JS_OBJECT_DEF("led", js_led);
+
 /* timer */
 static const JSPropDef js_timer[] = {
     JS_CFUNC_DEF("millis", 0, js_timer_millis),
@@ -442,6 +454,7 @@ static const JSPropDef js_global_object[] = {
     /* pico native objects */
     JS_PROP_CLASS_DEF("console", &js_console_obj),
     JS_PROP_CLASS_DEF("gpio", &js_gpio_obj),
+    JS_PROP_CLASS_DEF("led", &js_led_obj),
     JS_PROP_CLASS_DEF("timer", &js_timer_obj),
     JS_PROP_CLASS_DEF("wifi", &js_wifi_obj),
     JS_PROP_CLASS_DEF("mqtt", &js_mqtt_obj),

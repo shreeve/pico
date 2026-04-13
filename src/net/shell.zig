@@ -431,6 +431,27 @@ fn processCommand(line: []const u8) void {
         setLed(true);
     } else if (eql(cmd, "led off")) {
         setLed(false);
+    } else if (eql(cmd, "led toggle")) {
+        const led_mod = @import("../bindings/led.zig");
+        led_mod.toggle();
+        if (led_mod.isOn()) sendReply("\r\nLED on\r\n> ") else sendReply("\r\nLED off\r\n> ");
+    } else if (startsWith(cmd, "led blink")) {
+        const led_mod = @import("../bindings/led.zig");
+        var ms: u32 = 500;
+        if (cmd.len > 10) {
+            const arg = trim(cmd[10..]);
+            var v: u32 = 0;
+            for (arg) |ch| {
+                if (ch >= '0' and ch <= '9') { v = v * 10 + (ch - '0'); } else break;
+            }
+            if (v > 0) ms = v;
+        }
+        led_mod.blink(ms);
+        reply_len = 0;
+        appendStr("\r\nLED blink ");
+        appendU32(ms);
+        appendStr("ms\r\n> ");
+        flushReply();
     } else if (eql(cmd, "reboot")) {
         sendReply("\r\nRebooting into BOOTSEL...\r\n");
         hal.platform.resetToUsbBoot();
@@ -531,11 +552,8 @@ fn evalJs(expr: []const u8) void {
 }
 
 fn setLed(on: bool) void {
-    const cyw43 = @import("../cyw43/cyw43.zig");
-    cyw43.ledSet(on) catch {
-        sendReply("\r\nLED error\r\n> ");
-        return;
-    };
+    const led_mod = @import("../bindings/led.zig");
+    led_mod.set(on);
     if (on) sendReply("\r\nLED on\r\n> ") else sendReply("\r\nLED off\r\n> ");
 }
 

@@ -18,6 +18,13 @@ JSValue js_gpio_write(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv
 JSValue js_gpio_read(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 JSValue js_gpio_toggle(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 
+/* led */
+JSValue js_led_on(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_led_off(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_led_toggle(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_led_blink(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_led_isOn(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+
 /* timer */
 JSValue js_timer_millis(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 JSValue js_setTimeout(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);

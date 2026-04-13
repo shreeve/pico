@@ -35,6 +35,7 @@ const storage = @import("bindings/storage.zig");
 const config = @import("config/device_config.zig");
 const wifi = @import("bindings/wifi.zig");
 const mqtt = @import("bindings/mqtt.zig");
+const led = @import("bindings/led.zig");
 const script_push = @import("net/script_push.zig");
 const shell = @import("net/shell.zig");
 const usb_host = @import("usb/host.zig");
@@ -44,6 +45,7 @@ const usb_js = @import("bindings/usb.zig");
 comptime {
     _ = @import("bindings/console.zig");
     _ = @import("bindings/gpio.zig");
+    _ = @import("bindings/led.zig");
     _ = @import("bindings/timers.zig");
     _ = @import("bindings/wifi.zig"); // exports needed by C function table
     _ = @import("bindings/mqtt.zig"); // exports needed by C function table
@@ -159,6 +161,7 @@ pub fn main() noreturn {
         pollUart();
         wifi.poll();
         mqtt.poll();
+        led.poll();
         if (build_config.usb_host) {
             usb_host.poll();
             usb_ftdi.poll();

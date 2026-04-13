@@ -125,6 +125,29 @@ fn parseAndLogPublish(data: []const u8) void {
         return;
     }
 
+    // pico/led — "on", "off", "toggle", or "blink" / "blink 200"
+    if (topic.len == 8 and topic[5] == 'l' and topic[6] == 'e' and topic[7] == 'd') {
+        const led_mod = @import("led.zig");
+        if (payload.len >= 5 and payload[0] == 'b' and payload[1] == 'l') {
+            var ms: u32 = 500;
+            if (payload.len > 6) {
+                ms = parseU32(payload[6..]) orelse 500;
+            }
+            led_mod.blink(ms);
+            console.puts("[led] blink\n");
+        } else if (payload.len >= 2 and payload[0] == 'o' and payload[1] == 'n') {
+            led_mod.set(true);
+            console.puts("[led] on\n");
+        } else if (payload.len >= 3 and payload[0] == 'o' and payload[1] == 'f' and payload[2] == 'f') {
+            led_mod.set(false);
+            console.puts("[led] off\n");
+        } else if (payload.len >= 6 and payload[0] == 't' and payload[1] == 'o' and payload[2] == 'g') {
+            led_mod.toggle();
+            if (led_mod.isOn()) console.puts("[led] on\n") else console.puts("[led] off\n");
+        }
+        return;
+    }
+
     dispatchToJs(topic, payload);
 }
 
@@ -445,6 +468,15 @@ fn buildSubscribe(buf: []u8) usize {
     pos += 1;
 
     return pos;
+}
+
+fn parseU32(s: []const u8) ?u32 {
+    var val: u32 = 0;
+    for (s) |ch| {
+        if (ch < '0' or ch > '9') break;
+        val = val * 10 + (ch - '0');
+    }
+    return if (val > 0) val else null;
 }
 
 fn encodeRemainingLength(buf: []u8, length: usize) usize {

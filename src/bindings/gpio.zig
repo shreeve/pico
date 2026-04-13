@@ -1,8 +1,10 @@
 // GPIO service — exposes gpio.mode / gpio.write / gpio.read / gpio.toggle to JS.
+//
+// For RP2040 pins 0-29 only. The Pico W onboard LED is on the CYW43
+// chip and is handled by bindings/led.zig, not this module.
+
 const hal = @import("../platform/hal.zig");
 const c = @import("../js/quickjs_api.zig");
-
-pub const ONBOARD_LED: u5 = 25;
 
 fn pinFromArg(ctx: *c.JSContext, val: c.JSValue) ?u5 {
     var pin: i32 = 0;
