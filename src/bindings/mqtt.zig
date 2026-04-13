@@ -183,6 +183,31 @@ pub fn connectBroker(ip: [4]u8, port: u16, client_id: []const u8) bool {
     return true;
 }
 
+pub fn connectBrokerTls(
+    ip: [4]u8,
+    port: u16,
+    client_id: []const u8,
+    server_name: [*:0]const u8,
+    broker_rsa_key: *const ssl.RsaPublicKey,
+) bool {
+    const id_len = @min(client_id.len, client_id_buf.len);
+    @memcpy(client_id_buf[0..id_len], client_id[0..id_len]);
+    client_id_len = id_len;
+    state = .connecting;
+    tls_mode = true;
+
+    const session = tls_mod.getSession();
+    session.init(broker_rsa_key);
+
+    if (!session.connect(ip, port, server_name, vtable)) {
+        console.puts("[mqtt] TLS connect failed\n");
+        state = .error_state;
+        return false;
+    }
+    console.puts("[mqtt] TLS connecting...\n");
+    return true;
+}
+
 pub fn publish(topic: []const u8, payload: []const u8) bool {
     if (state != .connected) return false;
 

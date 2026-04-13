@@ -84,8 +84,9 @@ pub fn engineSetBuffersBidi(
     c.br_ssl_engine_set_buffers_bidi(eng, ibuf.ptr, ibuf.len, obuf.ptr, obuf.len);
 }
 
-pub fn engineSetX509(eng: *EngineContext, x509ctx: *const *const X509Class) void {
-    c.br_ssl_engine_set_x509(eng, x509ctx);
+pub fn engineSetX509(eng: *EngineContext, x509ctx: anytype) void {
+    const Ptr = [*c][*c]const c.br_x509_class;
+    c.br_ssl_engine_set_x509(eng, @as(Ptr, @ptrCast(x509ctx)));
 }
 
 pub fn engineInjectEntropy(eng: *EngineContext, data: []const u8) void {

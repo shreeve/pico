@@ -41,7 +41,7 @@ pub const TlsState = enum {
 
 // ── Buffer sizes ─────────────────────────────────────────────────────
 
-const BEARSSL_IBUF_SIZE = 4096;
+const BEARSSL_IBUF_SIZE = 6144;
 const BEARSSL_OBUF_SIZE = 2048;
 const TX_RETAIN_SIZE = 2048;
 const APP_RX_SIZE = 1024;
@@ -194,7 +194,7 @@ pub const TlsSession = struct {
         ssl.engineSetPrfSha256(eng);
 
         // Link X.509 trust
-        ssl.engineSetX509(eng, @ptrCast(&self.x509_ctx.vtable));
+        ssl.engineSetX509(eng, &self.x509_ctx.vtable);
 
         // Set I/O buffers (separate in/out for full-duplex)
         ssl.engineSetBuffersBidi(eng, &self.bearssl_ibuf, &self.bearssl_obuf);
@@ -314,7 +314,10 @@ pub const TlsSession = struct {
             if ((st & ssl.SSL_CLOSED) != 0) {
                 const err = ssl.engineLastError(eng);
                 if (err != ssl.ERR_OK) {
-                    console.puts("[tls] engine error\n");
+                    const fmt = @import("../lib/fmt.zig");
+                    console.puts("[tls] engine error ");
+                    fmt.putDec(@intCast(@as(u32, @bitCast(err))));
+                    console.puts("\n");
                     self.state = .error_state;
                 } else {
                     self.state = .idle;

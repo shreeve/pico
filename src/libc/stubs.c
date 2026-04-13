@@ -214,6 +214,19 @@ int gettimeofday(struct timeval *tv, void *tz)
     return 0;
 }
 
+/* ── BearSSL system RNG stub ──────────────────────────────────────────
+ * BearSSL's engine init references br_prng_seeder_system for auto-seeding.
+ * On freestanding ARM we provide entropy manually via ROSC jitter, so
+ * this returns NULL (no system seeder available). */
+
+typedef int (*br_prng_seeder)(const void **ctx);
+
+br_prng_seeder br_prng_seeder_system(const char **name)
+{
+    if (name) *name = 0;
+    return 0;
+}
+
 /* ── setjmp / longjmp (ARM Cortex-M Thumb) ───────────────────────────
  * Save/restore callee-saved registers: r4-r11, sp (r13), lr (r14).
  * jmp_buf is unsigned long[10]. */
