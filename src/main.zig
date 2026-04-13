@@ -26,7 +26,7 @@ const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const fmt = @import("lib/fmt.zig");
 const memory = @import("runtime/memory_pool.zig");
-const poll = @import("runtime/poll.zig");
+const runtime = @import("runtime/runtime.zig");
 const netif = @import("net/stack.zig");
 const watchdog = @import("runtime/watchdog.zig");
 const engine = @import("js/runtime.zig");
@@ -153,7 +153,7 @@ pub fn main() noreturn {
     // Cooperative superloop: all forward progress happens here.
     // Subsystems are polled in a fixed order each iteration.
     while (true) {
-        _ = poll.step();
+        _ = runtime.poll();
         pollUartCmd();
         wifi.poll();
         mqtt.poll();

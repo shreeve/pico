@@ -100,7 +100,7 @@ pico/
 │   │   ├── startup.zig    Vector table + BSS/data init
 │   │   └── *.ld           Linker scripts
 │   ├── runtime/           Core runtime
-│   │   ├── poll.zig       Cooperative polling runtime
+│   │   ├── runtime.zig    JS timers, deferred callbacks, task scheduler
 │   │   ├── scheduler.zig  Task scheduler
 │   │   ├── timer.zig      Software timers
 │   │   ├── memory_pool.zig Fixed memory pool

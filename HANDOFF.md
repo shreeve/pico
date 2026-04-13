@@ -122,7 +122,7 @@ src/
 │   ├── startup.zig           Vector table + BSS/data init
 │   └── *.ld                  Linker scripts
 ├── runtime/                  Core runtime
-│   ├── poll.zig              Timers + deferred callbacks (not device polling)
+│   ├── runtime.zig           JS timers, deferred callbacks, task scheduler
 │   ├── scheduler.zig         Task queue
 │   ├── timer.zig             Software timers
 │   ├── memory_pool.zig       Fixed memory pool

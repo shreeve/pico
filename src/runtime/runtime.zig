@@ -12,7 +12,7 @@ var tick_count: u64 = 0;
 
 /// Process pending timers, deferred callbacks, and scheduled tasks.
 /// Called once per main loop iteration. Returns true if work was done.
-pub fn step() bool {
+pub fn poll() bool {
     tick_count +%= 1;
     timer_mod.processPending();
     const had_work = scheduler.hasWork();
