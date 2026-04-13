@@ -1,22 +1,18 @@
 // Telnet shell — interactive remote console over TCP port 23.
 //
-// Provides a line-buffered command interface accessible via:
-//   telnet <pico-ip>
+// Line editing (readline-lite):
+//   Left/Right     Move cursor
+//   Up/Down        Command history (4 entries, preserves current line)
+//   Ctrl-A/E       Home / End
+//   Ctrl-K         Kill to end of line
+//   Ctrl-U         Clear entire line
+//   Ctrl-C         Cancel line
+//   Home/End/Del   Supported via ANSI escape sequences
 //
 // Commands:
-//   help              Show available commands
-//   stats             Network stack counters
-//   ip                Show IP configuration
-//   uptime            System uptime in seconds
-//   mem               Memory pool status
-//   eval <js>         Evaluate JavaScript expression
-//   mqtt <ip>         Connect to MQTT broker on port 1883
-//   pub <topic> <msg> Publish MQTT message
-//   sub <topic>       Subscribe to MQTT topic
-//   mqtt?             Show MQTT connection status
-//   led on/off        Control onboard LED
-//   reboot            Enter BOOTSEL mode
-//   quit              Close connection
+//   help, stats, ip, uptime, mem, eval <js>,
+//   mqtt <ip>, mqtts <ip>, pub <topic> <msg>, sub <topic>, mqtt?,
+//   led on/off, reboot, quit
 //
 // Implements AppVTable for app-driven TCP interaction.
 
@@ -30,13 +26,39 @@ const mqtt = @import("../bindings/mqtt.zig");
 const ssl = @import("../tls/bearssl.zig");
 
 const LISTEN_PORT: u16 = 23;
+const CMD_MAX = 128;
+const HIST_SLOTS = 4;
+const PROMPT = "> ";
+const PROMPT_LEN = PROMPT.len;
 
 var active_conn: ?stack_mod.ConnId = null;
 
-var cmd_buf: [128]u8 = undefined;
-var cmd_len: usize = 0;
+// ── Line editor state ────────────────────────────────────────────────
 
-var reply_buf: [512]u8 = undefined;
+var cmd_buf: [CMD_MAX]u8 = undefined;
+var cmd_len: usize = 0;
+var cmd_cursor: usize = 0;
+
+// History ring
+var history: [HIST_SLOTS][CMD_MAX]u8 = undefined;
+var hist_len: [HIST_SLOTS]u8 = [_]u8{0} ** HIST_SLOTS;
+var hist_head: u8 = 0;
+var hist_count: u8 = 0;
+var hist_nav: u8 = 0;
+var hist_browsing: bool = false;
+
+// Scratch: preserves current line when browsing history
+var scratch_buf: [CMD_MAX]u8 = undefined;
+var scratch_len: usize = 0;
+
+// Parser state (persists across onRecv calls)
+var esc_state: u8 = 0; // 0=normal, 1=got ESC, 2=got ESC+[, 3=got ESC+[+digit
+var esc_param: u8 = 0;
+var iac_state: u8 = 0; // 0=normal, 1=got IAC, 2=got IAC+cmd, 3=subneg, 4=subneg+IAC
+var last_was_cr: bool = false;
+
+// Output
+var reply_buf: [768]u8 = undefined;
 var reply_len: usize = 0;
 var reply_token: u16 = 0;
 
@@ -45,31 +67,272 @@ var reply_token: u16 = 0;
 fn onOpen(_: *anyopaque, id: stack_mod.ConnId) void {
     active_conn = id;
     cmd_len = 0;
+    cmd_cursor = 0;
+    esc_state = 0;
+    iac_state = 0;
+    last_was_cr = false;
+    hist_browsing = false;
     fmt.puts("[shell] client connected\n");
-    sendReply("pico v0.1.0 — type 'help' for commands\r\n> ");
-}
 
-var iac_skip: u8 = 0;
+    // Telnet negotiation: switch client to character-at-a-time mode
+    // so arrow keys and control chars arrive immediately.
+    sendReply(
+        "\xff\xfb\x01" ++ // IAC WILL ECHO (server handles echo)
+        "\xff\xfb\x03" ++ // IAC WILL SUPPRESS-GO-AHEAD
+        "\xff\xfd\x03" ++ // IAC DO SUPPRESS-GO-AHEAD
+        "pico v0.1.0 — type 'help' for commands\r\n" ++ PROMPT
+    );
+}
 
 fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
     for (data) |ch| {
-        if (iac_skip > 0) {
-            iac_skip -= 1;
+        // Telnet IAC parser — runs first, filters protocol bytes
+        if (iac_state != 0) {
+            switch (iac_state) {
+                1 => {
+                    // After IAC: WILL/WONT/DO/DONT take one more byte
+                    if (ch >= 0xFB and ch <= 0xFE) {
+                        iac_state = 2;
+                    } else if (ch == 0xFA) {
+                        iac_state = 3; // subnegotiation
+                    } else {
+                        iac_state = 0; // IAC + single command byte (e.g. IAC NOP)
+                    }
+                    continue;
+                },
+                2 => { iac_state = 0; continue; }, // option byte after WILL/WONT/DO/DONT
+                3 => { // subnegotiation data
+                    if (ch == 0xFF) iac_state = 4;
+                    continue;
+                },
+                4 => { // subneg: got IAC, looking for SE (0xF0)
+                    iac_state = if (ch == 0xF0) 0 else 3;
+                    continue;
+                },
+                else => { iac_state = 0; continue; },
+            }
+        }
+        if (ch == 0xFF) { iac_state = 1; continue; }
+
+        // ANSI escape sequence parser
+        if (esc_state != 0) {
+            switch (esc_state) {
+                1 => { // got ESC
+                    if (ch == '[') {
+                        esc_state = 2;
+                        esc_param = 0;
+                    } else if (ch == 'O') {
+                        esc_state = 2; // ESC O A/B/C/D (application mode)
+                        esc_param = 0;
+                    } else {
+                        esc_state = 0;
+                    }
+                    continue;
+                },
+                2 => { // got ESC[ or ESC O
+                    if (ch >= '0' and ch <= '9') {
+                        esc_param = ch - '0';
+                        esc_state = 3;
+                        continue;
+                    }
+                    handleCsi(ch);
+                    esc_state = 0;
+                    continue;
+                },
+                3 => { // got ESC[ + digit
+                    if (ch == '~') {
+                        handleTilde(esc_param);
+                    } else if (ch >= 'A' and ch <= 'Z') {
+                        handleCsi(ch);
+                    }
+                    esc_state = 0;
+                    continue;
+                },
+                else => { esc_state = 0; continue; },
+            }
+        }
+        if (ch == 0x1B) { esc_state = 1; last_was_cr = false; continue; }
+
+        // CR/LF handling
+        if (ch == '\r') {
+            submitLine();
+            last_was_cr = true;
             continue;
         }
-        if (ch == 0xFF) {
-            iac_skip = 2;
+        if (ch == '\n') {
+            if (last_was_cr) { last_was_cr = false; continue; }
+            submitLine();
             continue;
         }
-        if (ch == '\r') continue;
-        if (ch == '\n' or ch == 0) {
-            processCommand(cmd_buf[0..cmd_len]);
-            cmd_len = 0;
-        } else if (cmd_len < cmd_buf.len) {
-            cmd_buf[cmd_len] = ch;
-            cmd_len += 1;
+        if (ch == 0) { last_was_cr = false; continue; } // telnet CR NUL
+        last_was_cr = false;
+
+        // Control characters
+        if (ch == 0x01) { cmd_cursor = 0; redrawLine(); continue; }           // Ctrl-A
+        if (ch == 0x05) { cmd_cursor = cmd_len; redrawLine(); continue; }      // Ctrl-E
+        if (ch == 0x0B) { cmd_len = cmd_cursor; redrawLine(); continue; }      // Ctrl-K
+        if (ch == 0x15) { cmd_len = 0; cmd_cursor = 0; redrawLine(); continue; } // Ctrl-U
+        if (ch == 0x03) { cancelLine(); continue; }                            // Ctrl-C
+        if (ch == 0x7F or ch == 0x08) { backspace(); continue; }               // Backspace/DEL
+
+        // Printable ASCII only
+        if (ch >= 0x20 and ch <= 0x7E) {
+            insertChar(ch);
         }
     }
+}
+
+// ── Line editing ─────────────────────────────────────────────────────
+
+fn insertChar(ch: u8) void {
+    if (cmd_len >= CMD_MAX) return;
+    if (cmd_cursor < cmd_len) {
+        var i = cmd_len;
+        while (i > cmd_cursor) : (i -= 1) {
+            cmd_buf[i] = cmd_buf[i - 1];
+        }
+    }
+    cmd_buf[cmd_cursor] = ch;
+    cmd_len += 1;
+    cmd_cursor += 1;
+    if (hist_browsing) hist_browsing = false;
+    redrawLine();
+}
+
+fn backspace() void {
+    if (cmd_cursor == 0) return;
+    if (cmd_cursor < cmd_len) {
+        var i = cmd_cursor - 1;
+        while (i + 1 < cmd_len) : (i += 1) {
+            cmd_buf[i] = cmd_buf[i + 1];
+        }
+    }
+    cmd_cursor -= 1;
+    cmd_len -= 1;
+    redrawLine();
+}
+
+fn deleteAtCursor() void {
+    if (cmd_cursor >= cmd_len) return;
+    var i = cmd_cursor;
+    while (i + 1 < cmd_len) : (i += 1) {
+        cmd_buf[i] = cmd_buf[i + 1];
+    }
+    cmd_len -= 1;
+    redrawLine();
+}
+
+fn cancelLine() void {
+    cmd_len = 0;
+    cmd_cursor = 0;
+    hist_browsing = false;
+    reply_len = 0;
+    appendStr("\r\n^C\r\n" ++ PROMPT);
+    flushReply();
+}
+
+fn submitLine() void {
+    if (cmd_len > 0) {
+        historyPush(cmd_buf[0..cmd_len]);
+    }
+    processCommand(cmd_buf[0..cmd_len]);
+    cmd_len = 0;
+    cmd_cursor = 0;
+    hist_browsing = false;
+}
+
+// ── Escape sequence handlers ─────────────────────────────────────────
+
+fn handleCsi(ch: u8) void {
+    switch (ch) {
+        'A' => historyUp(),
+        'B' => historyDown(),
+        'C' => { if (cmd_cursor < cmd_len) { cmd_cursor += 1; redrawLine(); } },
+        'D' => { if (cmd_cursor > 0) { cmd_cursor -= 1; redrawLine(); } },
+        'H' => { cmd_cursor = 0; redrawLine(); },     // Home
+        'F' => { cmd_cursor = cmd_len; redrawLine(); }, // End
+        else => {},
+    }
+}
+
+fn handleTilde(param: u8) void {
+    switch (param) {
+        3 => deleteAtCursor(), // Delete key: ESC[3~
+        1 => { cmd_cursor = 0; redrawLine(); },        // Home: ESC[1~
+        4 => { cmd_cursor = cmd_len; redrawLine(); },   // End: ESC[4~
+        else => {},
+    }
+}
+
+// ── History ──────────────────────────────────────────────────────────
+
+fn historyPush(line: []const u8) void {
+    const n = @min(line.len, CMD_MAX);
+    @memcpy(history[hist_head][0..n], line[0..n]);
+    hist_len[hist_head] = @intCast(n);
+    hist_head = (hist_head + 1) % HIST_SLOTS;
+    if (hist_count < HIST_SLOTS) hist_count += 1;
+}
+
+fn historyUp() void {
+    if (hist_count == 0) return;
+
+    if (!hist_browsing) {
+        @memcpy(scratch_buf[0..cmd_len], cmd_buf[0..cmd_len]);
+        scratch_len = cmd_len;
+        hist_browsing = true;
+        hist_nav = 0;
+    }
+
+    if (hist_nav >= hist_count) return;
+    hist_nav += 1;
+
+    const idx = (hist_head + HIST_SLOTS - hist_nav) % HIST_SLOTS;
+    const len = hist_len[idx];
+    @memcpy(cmd_buf[0..len], history[idx][0..len]);
+    cmd_len = len;
+    cmd_cursor = len;
+    redrawLine();
+}
+
+fn historyDown() void {
+    if (!hist_browsing) return;
+
+    if (hist_nav <= 1) {
+        hist_browsing = false;
+        @memcpy(cmd_buf[0..scratch_len], scratch_buf[0..scratch_len]);
+        cmd_len = scratch_len;
+        cmd_cursor = scratch_len;
+        redrawLine();
+        return;
+    }
+
+    hist_nav -= 1;
+    const idx = (hist_head + HIST_SLOTS - hist_nav) % HIST_SLOTS;
+    const len = hist_len[idx];
+    @memcpy(cmd_buf[0..len], history[idx][0..len]);
+    cmd_len = len;
+    cmd_cursor = len;
+    redrawLine();
+}
+
+// ── Line redraw (ANSI) ──────────────────────────────────────────────
+
+fn redrawLine() void {
+    reply_len = 0;
+    appendStr("\r" ++ PROMPT);
+    if (cmd_len > 0) appendStr(cmd_buf[0..cmd_len]);
+    appendStr("\x1b[K"); // erase to end of line
+    // Reposition cursor: CR then move right to prompt + cursor offset
+    const col = PROMPT_LEN + cmd_cursor;
+    if (col == 0) {
+        appendStr("\r");
+    } else {
+        appendStr("\r\x1b[");
+        appendU32(@intCast(col));
+        appendStr("C");
+    }
+    flushReply();
 }
 
 fn onSent(_: *anyopaque, _: stack_mod.ConnId, _: u16) void {
@@ -79,6 +342,10 @@ fn onSent(_: *anyopaque, _: stack_mod.ConnId, _: u16) void {
 fn onClosed(_: *anyopaque, _: stack_mod.ConnId, _: stack_mod.CloseReason) void {
     active_conn = null;
     cmd_len = 0;
+    cmd_cursor = 0;
+    esc_state = 0;
+    iac_state = 0;
+    hist_browsing = false;
     fmt.puts("[shell] client disconnected\n");
 }
 
@@ -117,13 +384,13 @@ pub fn init() void {
 fn processCommand(line: []const u8) void {
     const cmd = trim(line);
     if (cmd.len == 0) {
-        sendReply("> ");
+        redrawLine();
         return;
     }
 
     if (eql(cmd, "help")) {
         sendReply(
-            "Commands:\r\n" ++
+            "\r\nCommands:\r\n" ++
             "  help              Show this help\r\n" ++
             "  stats             Network stack counters\r\n" ++
             "  ip                Show IP configuration\r\n" ++
@@ -165,14 +432,14 @@ fn processCommand(line: []const u8) void {
     } else if (eql(cmd, "led off")) {
         setLed(false);
     } else if (eql(cmd, "reboot")) {
-        sendReply("Rebooting into BOOTSEL...\r\n");
+        sendReply("\r\nRebooting into BOOTSEL...\r\n");
         hal.platform.resetToUsbBoot();
     } else if (eql(cmd, "quit")) {
-        sendReply("Bye!\r\n");
+        sendReply("\r\nBye!\r\n");
         if (active_conn) |id| netif.stack().tcpClose(id);
     } else {
         reply_len = 0;
-        appendStr("Unknown command: '");
+        appendStr("\r\nUnknown command: '");
         appendStr(cmd);
         appendStr("'\r\n> ");
         flushReply();
@@ -184,7 +451,7 @@ fn processCommand(line: []const u8) void {
 fn writeStats() void {
     const s = netif.stack().stats;
     reply_len = 0;
-    appendStr("Network stats:\r\n");
+    appendStr("\r\nNetwork stats:\r\n");
     appendStat("  ip_rx", s.ip_rx);
     appendStat("  icmp_rx", s.icmp_rx);
     appendStat("  icmp_tx", s.icmp_tx);
@@ -206,7 +473,7 @@ fn writeStats() void {
 fn writeIpConfig() void {
     const stack = netif.stack();
     reply_len = 0;
-    appendStr("IP config:\r\n  ip    ");
+    appendStr("\r\nIP config:\r\n  ip    ");
     appendIp(stack.local_ip);
     appendStr("\r\n  mask  ");
     appendIp(stack.subnet_mask);
@@ -219,7 +486,7 @@ fn writeIpConfig() void {
 fn writeUptime() void {
     const ms = hal.millis();
     reply_len = 0;
-    appendStr("Uptime: ");
+    appendStr("\r\nUptime: ");
     appendU32(@truncate(ms / 1000));
     appendStr("s\r\n> ");
     flushReply();
@@ -227,7 +494,7 @@ fn writeUptime() void {
 
 fn writeMem() void {
     reply_len = 0;
-    appendStr("Memory:\r\n  pool  ");
+    appendStr("\r\nMemory:\r\n  pool  ");
     appendU32(@intCast(memory.totalSize()));
     appendStr(" bytes\r\n  stack ");
     appendU32(@intCast(netif.Stack.memoryUsage()));
@@ -239,24 +506,25 @@ fn evalJs(expr: []const u8) void {
     const c = @import("../js/quickjs_api.zig");
     reply_len = 0;
     const val = engine.eval(expr, "<telnet>") catch {
-        appendStr("error\r\n> ");
+        appendStr("\r\nerror\r\n> ");
         flushReply();
         return;
     };
     if (c.JS_IsUndefined(val)) {
-        appendStr("undefined\r\n> ");
+        appendStr("\r\nundefined\r\n> ");
     } else {
         const cx = engine.context() orelse {
-            appendStr("OK\r\n> ");
+            appendStr("\r\nOK\r\n> ");
             flushReply();
             return;
         };
         const str_val = c.JS_ToString(cx, val);
         if (engine.toCString(str_val)) |s| {
+            appendStr("\r\n");
             appendStr(s.ptr[0..s.len]);
             appendStr("\r\n> ");
         } else {
-            appendStr("OK\r\n> ");
+            appendStr("\r\nOK\r\n> ");
         }
     }
     flushReply();
@@ -265,10 +533,10 @@ fn evalJs(expr: []const u8) void {
 fn setLed(on: bool) void {
     const cyw43 = @import("../cyw43/cyw43.zig");
     cyw43.ledSet(on) catch {
-        sendReply("LED error\r\n> ");
+        sendReply("\r\nLED error\r\n> ");
         return;
     };
-    if (on) sendReply("LED on\r\n> ") else sendReply("LED off\r\n> ");
+    if (on) sendReply("\r\nLED on\r\n> ") else sendReply("\r\nLED off\r\n> ");
 }
 
 // ── MQTT command handlers ────────────────────────────────────────────
@@ -286,14 +554,14 @@ fn mqttConnectTls(arg: []const u8) void {
     const ip_str = trim(arg);
     const ip = parseIp(ip_str) orelse {
         reply_len = 0;
-        appendStr("Invalid IP: ");
+        appendStr("\r\nInvalid IP: ");
         appendStr(ip_str);
         appendStr("\r\n> ");
         flushReply();
         return;
     };
     reply_len = 0;
-    appendStr("TLS connecting to ");
+    appendStr("\r\nTLS connecting to ");
     appendIp(ip);
     appendStr(":8883...\r\n> ");
     flushReply();
@@ -305,14 +573,14 @@ fn mqttConnect(arg: []const u8) void {
     const ip_str = trim(arg);
     const ip = parseIp(ip_str) orelse {
         reply_len = 0;
-        appendStr("Invalid IP: ");
+        appendStr("\r\nInvalid IP: ");
         appendStr(ip_str);
         appendStr("\r\n> ");
         flushReply();
         return;
     };
     reply_len = 0;
-    appendStr("Connecting to ");
+    appendStr("\r\nConnecting to ");
     appendIp(ip);
     appendStr(":1883...\r\n> ");
     flushReply();
@@ -321,50 +589,49 @@ fn mqttConnect(arg: []const u8) void {
 
 fn mqttPublish(arg: []const u8) void {
     const s = trim(arg);
-    // Split on first space: "topic message goes here"
     var split: usize = 0;
     while (split < s.len and s[split] != ' ') : (split += 1) {}
     if (split == 0 or split >= s.len) {
-        sendReply("Usage: pub <topic> <message>\r\n> ");
+        sendReply("\r\nUsage: pub <topic> <message>\r\n> ");
         return;
     }
     const topic = s[0..split];
     const msg = trim(s[split + 1 ..]);
     if (msg.len == 0) {
-        sendReply("Usage: pub <topic> <message>\r\n> ");
+        sendReply("\r\nUsage: pub <topic> <message>\r\n> ");
         return;
     }
     if (mqtt.publish(topic, msg)) {
         reply_len = 0;
-        appendStr("Published to ");
+        appendStr("\r\nPublished to ");
         appendStr(topic);
         appendStr("\r\n> ");
         flushReply();
     } else {
-        sendReply("Publish failed (not connected?)\r\n> ");
+        sendReply("\r\nPublish failed (not connected?)\r\n> ");
     }
 }
 
 fn mqttSubscribe(arg: []const u8) void {
     const topic = trim(arg);
     if (topic.len == 0) {
-        sendReply("Usage: sub <topic>\r\n> ");
+        sendReply("\r\nUsage: sub <topic>\r\n> ");
         return;
     }
     if (mqtt.subscribe(topic)) {
         reply_len = 0;
-        appendStr("Subscribed to ");
+        appendStr("\r\nSubscribed to ");
         appendStr(topic);
         appendStr("\r\n> ");
         flushReply();
     } else {
-        sendReply("Subscribe failed (not connected?)\r\n> ");
+        sendReply("\r\nSubscribe failed (not connected?)\r\n> ");
     }
 }
 
 fn mqttStatus() void {
     reply_len = 0;
-    appendStr("MQTT: ");
+    appendStr("\r\nMQTT: ");
     if (mqtt.isConnected()) {
         appendStr("connected\r\n");
     } else {
