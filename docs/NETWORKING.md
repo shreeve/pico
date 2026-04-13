@@ -20,7 +20,7 @@ CYW43439 Wi-Fi and networking stack on Pico W / Pico 2 W.
 - **ICMP echo reply — device responds to ping**
 
 ### Implemented but not yet validated on hardware
-- TCP/IP stack (`src/net/tcpip.zig`) — comptime-composed NetStack with multi-connection TCP, app-driven retransmit via AppVTable, work-flag output processing
+- TCP/IP stack (`src/net/tcpip.zig`) — comptime-composed NetStack with multi-connection TCP, app-driven retransmit via AppVTable, work-flag output processing; hardened with RX checksum verification, ACK/sequence validation, proper FIN state machine (including `.closing`), FIN retransmission, RST for unmatched segments, duplicate SYN handling
 - MQTT 3.1.1 client (`src/bindings/mqtt.zig`) — CONNECT, PUBLISH, SUBSCRIBE, PINGREQ via AppVTable, QoS 0
 - Script push protocol (`src/net/script_push.zig`) — TCP listener on port 9001
 - Flash KV storage (`src/bindings/storage.zig`) — append-log read via XIP
@@ -58,7 +58,10 @@ The stack in `src/net/tcpip.zig` is a comptime-parameterized `NetStack(Config)`:
 - **Stop-and-wait**: one unacked segment per connection, no sliding window.
 - **Multi-connection**: fixed array of N connections (default 4) + listener table.
 - **Work flags**: per-connection `ack_due`, `tx_ready`, `retx_due`, `close_due`.
-- **19 observability counters**: ip_rx, ip_bad_checksum, arp_hits/misses, tcp_retx, etc.
+- **Fixed receive window**: configurable at compile time (`rcv_wnd`, default 2048); no per-connection receive buffer — app consumes data via `on_recv` callback.
+- **21 observability counters**: ip_rx, ip_bad_checksum, arp_hits/misses, tcp_retx, tcp_bad_checksum, tcp_rst_tx, etc.
+- **RX checksum verification**: incoming TCP segments validated before processing.
+- **RST generation**: unmatched segments receive RST per RFC 793.
 - **Zero dynamic allocation**: all buffers are static, compile-time sized.
 
 ## Flash layout (RP2040, 2 MB)
@@ -110,5 +113,5 @@ This document is for:
 - what is proven on hardware
 - what is next in the stack
 
-Low-level CYW43 transport and bus details live in `CYW43.md`.
+Low-level CYW43 transport and bus details live in `docs/CYW43.md`.
 The host-side CLI tool vision lives in `PICO.md`.
