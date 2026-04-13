@@ -49,26 +49,29 @@ REPL for interactive development and file management.
 
 ## Core Features
 
-### 1. Remote Command Surface
+### 1. MQTT as Control Plane (replaces SSH entirely)
 
-**v1: MQTT + serial REPL.** All device control, JS eval, script
-push, and diagnostics work through the MQTT command channel and a
-serial (UART) REPL for local development. This avoids the complexity,
-attack surface, and RAM pressure of an on-device SSH server.
+SSH gives you remote control, observability, file access, and
+interactivity. But each of those has a better replacement:
 
-**v2+ (optional): SSH shell.** If field operators need interactive
-shell access without physical serial, add a lightweight SSH server
-(Dropbear or wolfSSH). See Phase 5.
+| SSH gives you | MQTT replacement | Why it's better |
+|---------------|-----------------|-----------------|
+| Remote control | Structured commands | Auditable, replayable, fleet-scale |
+| Observability | Status/metrics/log topics | Centralized, historical, queryable |
+| File access | Script push over MQTT | No open ports, works offline |
+| Interactive REPL | Eval/result topic pair | Same capability, zero attack surface |
 
-**Serial REPL (always available via UART):**
+The key insight: SSH is "interactive human debugging." MQTT is
+**programmable system control.** For a fleet of medical gateways,
+you want the second.
+
+**Serial REPL (always available via UART for local development):**
 
 ```
 piccolo v0.1.0 — type 'help' for commands
 > 2 + 2
 4
 > led.blink(200)
-true
-> mqtt.publish("piccolo/status", "online")
 true
 > run main.js
 [js] running main.js...
@@ -81,21 +84,96 @@ Heap: 5.2 MB free
 Up:   3h 22m
 ```
 
-**MQTT remote commands (encrypted, from anywhere):**
+### Structured Command Protocol
 
-```bash
-# Execute JS remotely
-mosquitto_pub -t "piccolo/abc123/js" -m 'led.blink(100)'
+Every remote command uses a structured JSON schema, not raw strings:
 
-# Push a script
-mosquitto_pub -t "piccolo/abc123/script/main.js" -m '$(cat main.js)'
-
-# Control LED
-mosquitto_pub -t "piccolo/abc123/led" -m "on"
-
-# Trigger OTA
-mosquitto_pub -t "piccolo/abc123/ota" -m "https://releases.example.com/v0.2.0.bin"
+**Inbound (to device):**
+```json
+{
+  "id": "cmd-847392",
+  "ts": 1710001234,
+  "op": "led.blink",
+  "args": { "ms": 200 }
+}
 ```
+
+**Response (from device):**
+```json
+{
+  "id": "cmd-847392",
+  "status": "ok",
+  "result": "blinking at 200ms"
+}
+```
+
+This gives you request/response correlation, audit trail, retry
+without duplication, and deterministic behavior.
+
+### Remote REPL over MQTT (replaces SSH shell)
+
+For interactive debugging, use a topic pair:
+
+```
+publish  → piccolo/<id>/eval     { "code": "2 + 2" }
+subscribe ← piccolo/<id>/result   { "result": 4 }
+```
+
+Same capability as SSH + typing, without opening ports, managing
+shells, or dealing with PTYs.
+
+### MQTT Topic Namespace
+
+**Inbound (control):**
+
+| Topic | Payload | Handler |
+|-------|---------|---------|
+| `piccolo/<id>/cmd` | Structured JSON command | C dispatch → action |
+| `piccolo/<id>/eval` | `{ "code": "..." }` | JS eval → result topic |
+| `piccolo/<id>/led` | `on`, `off`, `toggle`, `blink 200` | C native |
+| `piccolo/<id>/config` | JSON config update | C native |
+| `piccolo/<id>/ota` | URL of signed firmware | C native |
+| `piccolo/<id>/script/<name>` | JS source | Write to LittleFS |
+
+**Outbound (telemetry + responses):**
+
+| Topic | Payload | Frequency |
+|-------|---------|-----------|
+| `piccolo/<id>/result` | Command response JSON | Per command |
+| `piccolo/<id>/status` | WiFi, MQTT, USB, heap, uptime | Every 60s |
+| `piccolo/<id>/metrics` | Counters, error rates, queue depth | Every 60s |
+| `piccolo/<id>/log` | Structured log (level, msg, ts) | On event |
+| `piccolo/<id>/astm/result` | Parsed analyzer result + metadata | Per result |
+| `piccolo/<id>/astm/session` | Session start/end/error events | Per session |
+
+### Every Command is an Event
+
+Treat every inbound command as an append-only event:
+
+```
+command_log   ← what was requested, when, by whom
+execution_log ← what happened, duration, outcome
+result_log    ← what was returned or published
+```
+
+This gives you a perfect audit trail, replay capability, and
+deterministic debugging — far beyond what SSH could offer.
+
+### Why Not SSH
+
+| | SSH | MQTT control plane |
+|--|-----|-------------------|
+| Remote control | Yes | Yes |
+| Audit trail | No | **Yes** |
+| Works offline | No | **Yes** (spool + replay) |
+| Fleet scale | No (per-device) | **Yes** (topic hierarchy) |
+| Security surface | Large (daemon, PTY, auth) | **Small** (TLS + broker ACL) |
+| Deterministic | No (human typing) | **Yes** (structured commands) |
+| Replay/debug | No | **Yes** (event log) |
+| RAM/flash cost | ~100-200 KB | **Zero** (already have MQTT) |
+
+SSH is deferred to v2+ (Phase 5) and only justified if field
+operators need interactive shell access without physical serial.
 
 ### 2. MQTT over TLS
 
