@@ -36,6 +36,7 @@ const config = @import("config/device_config.zig");
 const wifi = @import("bindings/wifi.zig");
 const mqtt = @import("bindings/mqtt.zig");
 const script_push = @import("net/script_push.zig");
+const shell = @import("net/shell.zig");
 const usb_host = @import("usb/host.zig");
 const usb_ftdi = @import("usb/ftdi.zig");
 const usb_js = @import("bindings/usb.zig");
@@ -119,8 +120,9 @@ pub fn main() noreturn {
         puts("\n");
     }
 
-    // 7. Script push listener (TCP port 9001)
+    // 7. Network services (TCP listeners)
     script_push.init();
+    shell.init();
 
     // 8. Periodic timer tick (10ms, enables wfe in main loop)
     rp2040.initPeriodicTick();
