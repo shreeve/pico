@@ -207,13 +207,29 @@ fn writeMem() void {
 }
 
 fn evalJs(expr: []const u8) void {
+    const c = @import("../js/quickjs_api.zig");
     reply_len = 0;
-    _ = engine.eval(expr, "<telnet>") catch {
-        appendStr("JS error\r\n> ");
+    const val = engine.eval(expr, "<telnet>") catch {
+        appendStr("error\r\n> ");
         flushReply();
         return;
     };
-    appendStr("OK\r\n> ");
+    if (c.JS_IsUndefined(val)) {
+        appendStr("undefined\r\n> ");
+    } else {
+        const cx = engine.context() orelse {
+            appendStr("OK\r\n> ");
+            flushReply();
+            return;
+        };
+        const str_val = c.JS_ToString(cx, val);
+        if (engine.toCString(str_val)) |s| {
+            appendStr(s.ptr[0..s.len]);
+            appendStr("\r\n> ");
+        } else {
+            appendStr("OK\r\n> ");
+        }
+    }
     flushReply();
 }
 
