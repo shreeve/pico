@@ -18,6 +18,7 @@ const stack_mod = @import("../net/tcpip.zig");
 const hal = @import("../platform/hal.zig");
 const tls_mod = @import("../tls/tls.zig");
 const ssl = @import("../tls/bearssl.zig");
+const engine = @import("../js/runtime.zig");
 
 pub const MqttState = enum { disconnected, connecting, connected, error_state };
 
@@ -79,7 +80,7 @@ fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
                 state = .connected;
                 last_ping_ms = hal.millis();
                 console.puts("[mqtt] CONNACK OK\n");
-                _ = subscribe("pico/cmd");
+                _ = subscribe("pico/#");
             } else {
                 state = .error_state;
                 console.puts("[mqtt] CONNACK rejected\n");
@@ -111,6 +112,70 @@ fn parseAndLogPublish(data: []const u8) void {
     console.puts(" → ");
     if (payload.len > 0) console.puts(payload);
     console.puts("\n");
+
+    // pico/js — execute payload as JavaScript
+    if (topic.len == 7 and topic[5] == 'j' and topic[6] == 's' and payload.len > 0)
+    {
+        console.puts("[js] ");
+        _ = engine.eval(payload, "<mqtt>") catch {
+            console.puts("error\n");
+            return;
+        };
+        console.puts("ok\n");
+        return;
+    }
+
+    dispatchToJs(topic, payload);
+}
+
+// ── JS callback dispatch ─────────────────────────────────────────────
+// Builds and evals: mqtt._onMessage("topic","payload")
+// The JS side sets mqtt._onMessage to receive incoming messages.
+
+var js_call_buf: [512]u8 = undefined;
+
+fn dispatchToJs(topic: []const u8, payload: []const u8) void {
+    // mqtt._onMessage("topic","payload")
+    const prefix = "typeof mqtt!=='undefined'&&typeof mqtt._onMessage==='function'&&mqtt._onMessage(\"";
+    const mid = "\",\"";
+    const suffix = "\")";
+
+    const needed = prefix.len + topic.len + mid.len + payload.len + suffix.len;
+    if (needed > js_call_buf.len) return;
+
+    var pos: usize = 0;
+    @memcpy(js_call_buf[pos..][0..prefix.len], prefix);
+    pos += prefix.len;
+
+    // Copy topic (escape quotes)
+    for (topic) |ch| {
+        if (pos >= js_call_buf.len - suffix.len - mid.len - payload.len - 2) return;
+        if (ch == '"' or ch == '\\') {
+            js_call_buf[pos] = '\\';
+            pos += 1;
+        }
+        js_call_buf[pos] = ch;
+        pos += 1;
+    }
+
+    @memcpy(js_call_buf[pos..][0..mid.len], mid);
+    pos += mid.len;
+
+    // Copy payload (escape quotes)
+    for (payload) |ch| {
+        if (pos >= js_call_buf.len - suffix.len - 2) return;
+        if (ch == '"' or ch == '\\') {
+            js_call_buf[pos] = '\\';
+            pos += 1;
+        }
+        js_call_buf[pos] = ch;
+        pos += 1;
+    }
+
+    @memcpy(js_call_buf[pos..][0..suffix.len], suffix);
+    pos += suffix.len;
+
+    _ = engine.eval(js_call_buf[0..pos], "<mqtt>") catch {};
 }
 
 fn onSent(_: *anyopaque, _: stack_mod.ConnId, _: u16) void {
@@ -399,8 +464,29 @@ fn encodeRemainingLength(buf: []u8, length: usize) usize {
 // ── JS exports ───────────────────────────────────────────────────────
 
 pub export fn js_mqtt_connect(_: ?*c.JSContext, _: ?*c.JSValue, _: c_int, _: ?[*]c.JSValue) c.JSValue {
-    console.puts("[mqtt] JS connect (use mqtt.connectBroker from native)\n");
+    console.puts("[mqtt] JS connect (use 'mqtt <ip>' in shell)\n");
     return c.JS_UNDEFINED;
+}
+
+pub export fn js_mqtt_on(ctx: ?*c.JSContext, _: ?*c.JSValue, argc: c_int, argv: ?[*]c.JSValue) c.JSValue {
+    if (argc < 2) return c.JS_UNDEFINED;
+    const cx = ctx orelse return c.JS_UNDEFINED;
+    const args = argv orelse return c.JS_UNDEFINED;
+
+    var eb: c.JSCStringBuf = undefined;
+    var elen: usize = 0;
+    const event = c.JS_ToCStringLen(cx, &elen, args[0], &eb) orelse return c.JS_UNDEFINED;
+
+    if (elen == 7 and event[0] == 'm' and event[1] == 'e' and event[2] == 's' and
+        event[3] == 's' and event[4] == 'a' and event[5] == 'g' and event[6] == 'e')
+    {
+        // mqtt.on("message", fn) → store fn as mqtt._onMessage
+        const global = c.JS_GetGlobalObject(cx);
+        const mqtt_obj = c.JS_GetPropertyStr(cx, global, "mqtt");
+        _ = c.JS_SetPropertyStr(cx, mqtt_obj, "_onMessage", args[1]);
+        return c.JS_TRUE;
+    }
+    return c.JS_FALSE;
 }
 
 pub export fn js_mqtt_publish(ctx: ?*c.JSContext, _: ?*c.JSValue, argc: c_int, argv: ?[*]c.JSValue) c.JSValue {

@@ -358,6 +358,8 @@ static const JSPropDef js_mqtt[] = {
     JS_CFUNC_DEF("publish", 2, js_mqtt_publish),
     JS_CFUNC_DEF("subscribe", 2, js_mqtt_subscribe),
     JS_CFUNC_DEF("disconnect", 0, js_mqtt_disconnect),
+    JS_CFUNC_DEF("status", 0, js_mqtt_status),
+    JS_CFUNC_DEF("on", 2, js_mqtt_on),
     JS_PROP_END,
 };
 static const JSClassDef js_mqtt_obj =

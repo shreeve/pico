@@ -38,6 +38,8 @@ JSValue js_mqtt_connect(JSContext *ctx, JSValue *this_val, int argc, JSValue *ar
 JSValue js_mqtt_publish(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 JSValue js_mqtt_subscribe(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 JSValue js_mqtt_disconnect(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_mqtt_status(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
+JSValue js_mqtt_on(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
 
 /* storage */
 JSValue js_storage_get(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv);
