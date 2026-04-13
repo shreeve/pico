@@ -153,7 +153,7 @@ pub fn main() noreturn {
     // Cooperative superloop: all forward progress happens here.
     // Subsystems are polled in a fixed order each iteration.
     while (true) {
-        _ = runtime.poll();
+        runtime.poll();
         pollUart();
         wifi.poll();
         mqtt.poll();
