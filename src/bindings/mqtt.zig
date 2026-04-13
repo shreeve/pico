@@ -79,17 +79,38 @@ fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
                 state = .connected;
                 last_ping_ms = hal.millis();
                 console.puts("[mqtt] CONNACK OK\n");
+                _ = subscribe("pico/cmd");
             } else {
                 state = .error_state;
                 console.puts("[mqtt] CONNACK rejected\n");
             }
         },
         PACKET_PUBLISH => {
-            console.puts("[mqtt] received PUBLISH\n");
+            parseAndLogPublish(data);
         },
         PACKET_PINGRESP => {},
         else => {},
     }
+}
+
+fn parseAndLogPublish(data: []const u8) void {
+    if (data.len < 4) return;
+    const remaining_start: usize = if ((data[1] & 0x80) != 0) 3 else 2;
+    if (data.len < remaining_start + 2) return;
+
+    const topic_len = (@as(u16, data[remaining_start]) << 8) | data[remaining_start + 1];
+    const topic_start = remaining_start + 2;
+    if (data.len < topic_start + topic_len) return;
+
+    const topic = data[topic_start..][0..topic_len];
+    const payload_start = topic_start + topic_len;
+    const payload = if (payload_start < data.len) data[payload_start..] else &[_]u8{};
+
+    console.puts("[mqtt] ");
+    console.puts(topic);
+    console.puts(" → ");
+    if (payload.len > 0) console.puts(payload);
+    console.puts("\n");
 }
 
 fn onSent(_: *anyopaque, _: stack_mod.ConnId, _: u16) void {

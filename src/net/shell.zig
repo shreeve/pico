@@ -4,15 +4,19 @@
 //   telnet <pico-ip>
 //
 // Commands:
-//   help        Show available commands
-//   stats       Network stack counters
-//   ip          Show IP configuration
-//   uptime      System uptime in seconds
-//   mem         Memory pool status
-//   eval <js>   Evaluate JavaScript expression
-//   led on/off  Control onboard LED
-//   reboot      Enter BOOTSEL mode
-//   quit        Close connection
+//   help              Show available commands
+//   stats             Network stack counters
+//   ip                Show IP configuration
+//   uptime            System uptime in seconds
+//   mem               Memory pool status
+//   eval <js>         Evaluate JavaScript expression
+//   mqtt <ip>         Connect to MQTT broker on port 1883
+//   pub <topic> <msg> Publish MQTT message
+//   sub <topic>       Subscribe to MQTT topic
+//   mqtt?             Show MQTT connection status
+//   led on/off        Control onboard LED
+//   reboot            Enter BOOTSEL mode
+//   quit              Close connection
 //
 // Implements AppVTable for app-driven TCP interaction.
 
@@ -22,6 +26,7 @@ const stack_mod = @import("tcpip.zig");
 const hal = @import("../platform/hal.zig");
 const engine = @import("../js/runtime.zig");
 const memory = @import("../runtime/memory_pool.zig");
+const mqtt = @import("../bindings/mqtt.zig");
 
 const LISTEN_PORT: u16 = 23;
 
@@ -43,14 +48,22 @@ fn onOpen(_: *anyopaque, id: stack_mod.ConnId) void {
     sendReply("pico v0.1.0 — type 'help' for commands\r\n> ");
 }
 
+var iac_skip: u8 = 0;
+
 fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
     for (data) |ch| {
+        if (iac_skip > 0) {
+            iac_skip -= 1;
+            continue;
+        }
+        if (ch == 0xFF) {
+            iac_skip = 2;
+            continue;
+        }
         if (ch == '\r') continue;
         if (ch == '\n' or ch == 0) {
             processCommand(cmd_buf[0..cmd_len]);
             cmd_len = 0;
-        } else if (ch == 0xFF) {
-            // Telnet IAC — skip negotiation sequences
         } else if (cmd_len < cmd_buf.len) {
             cmd_buf[cmd_len] = ch;
             cmd_len += 1;
@@ -110,15 +123,19 @@ fn processCommand(line: []const u8) void {
     if (eql(cmd, "help")) {
         sendReply(
             "Commands:\r\n" ++
-            "  help        Show this help\r\n" ++
-            "  stats       Network stack counters\r\n" ++
-            "  ip          Show IP configuration\r\n" ++
-            "  uptime      System uptime\r\n" ++
-            "  mem         Memory pool status\r\n" ++
-            "  eval <js>   Evaluate JavaScript\r\n" ++
-            "  led on/off  Control onboard LED\r\n" ++
-            "  reboot      Enter BOOTSEL mode\r\n" ++
-            "  quit        Close connection\r\n" ++
+            "  help              Show this help\r\n" ++
+            "  stats             Network stack counters\r\n" ++
+            "  ip                Show IP configuration\r\n" ++
+            "  uptime            System uptime\r\n" ++
+            "  mem               Memory pool status\r\n" ++
+            "  eval <js>         Evaluate JavaScript\r\n" ++
+            "  mqtt <ip>         Connect to MQTT broker\r\n" ++
+            "  pub <topic> <msg> Publish message\r\n" ++
+            "  sub <topic>       Subscribe to topic\r\n" ++
+            "  mqtt?             MQTT connection status\r\n" ++
+            "  led on/off        Control onboard LED\r\n" ++
+            "  reboot            Enter BOOTSEL mode\r\n" ++
+            "  quit              Close connection\r\n" ++
             "> ",
         );
     } else if (eql(cmd, "stats")) {
@@ -131,6 +148,14 @@ fn processCommand(line: []const u8) void {
         writeMem();
     } else if (startsWith(cmd, "eval ")) {
         evalJs(cmd[5..]);
+    } else if (startsWith(cmd, "mqtt ")) {
+        mqttConnect(cmd[5..]);
+    } else if (startsWith(cmd, "pub ")) {
+        mqttPublish(cmd[4..]);
+    } else if (startsWith(cmd, "sub ")) {
+        mqttSubscribe(cmd[4..]);
+    } else if (eql(cmd, "mqtt?")) {
+        mqttStatus();
     } else if (eql(cmd, "led on")) {
         setLed(true);
     } else if (eql(cmd, "led off")) {
@@ -240,6 +265,104 @@ fn setLed(on: bool) void {
         return;
     };
     if (on) sendReply("LED on\r\n> ") else sendReply("LED off\r\n> ");
+}
+
+// ── MQTT command handlers ────────────────────────────────────────────
+
+fn mqttConnect(arg: []const u8) void {
+    const ip_str = trim(arg);
+    const ip = parseIp(ip_str) orelse {
+        reply_len = 0;
+        appendStr("Invalid IP: ");
+        appendStr(ip_str);
+        appendStr("\r\n> ");
+        flushReply();
+        return;
+    };
+    reply_len = 0;
+    appendStr("Connecting to ");
+    appendIp(ip);
+    appendStr(":1883...\r\n> ");
+    flushReply();
+    _ = mqtt.connectBroker(ip, 1883, "pico");
+}
+
+fn mqttPublish(arg: []const u8) void {
+    const s = trim(arg);
+    // Split on first space: "topic message goes here"
+    var split: usize = 0;
+    while (split < s.len and s[split] != ' ') : (split += 1) {}
+    if (split == 0 or split >= s.len) {
+        sendReply("Usage: pub <topic> <message>\r\n> ");
+        return;
+    }
+    const topic = s[0..split];
+    const msg = trim(s[split + 1 ..]);
+    if (msg.len == 0) {
+        sendReply("Usage: pub <topic> <message>\r\n> ");
+        return;
+    }
+    if (mqtt.publish(topic, msg)) {
+        reply_len = 0;
+        appendStr("Published to ");
+        appendStr(topic);
+        appendStr("\r\n> ");
+        flushReply();
+    } else {
+        sendReply("Publish failed (not connected?)\r\n> ");
+    }
+}
+
+fn mqttSubscribe(arg: []const u8) void {
+    const topic = trim(arg);
+    if (topic.len == 0) {
+        sendReply("Usage: sub <topic>\r\n> ");
+        return;
+    }
+    if (mqtt.subscribe(topic)) {
+        reply_len = 0;
+        appendStr("Subscribed to ");
+        appendStr(topic);
+        appendStr("\r\n> ");
+        flushReply();
+    } else {
+        sendReply("Subscribe failed (not connected?)\r\n> ");
+    }
+}
+
+fn mqttStatus() void {
+    reply_len = 0;
+    appendStr("MQTT: ");
+    if (mqtt.isConnected()) {
+        appendStr("connected\r\n");
+    } else {
+        appendStr("disconnected\r\n");
+    }
+    appendStr("> ");
+    flushReply();
+}
+
+fn parseIp(s: []const u8) ?[4]u8 {
+    var ip: [4]u8 = undefined;
+    var octet: u16 = 0;
+    var dots: u8 = 0;
+    var digits: u8 = 0;
+    for (s) |ch| {
+        if (ch >= '0' and ch <= '9') {
+            octet = octet * 10 + (ch - '0');
+            if (octet > 255) return null;
+            digits += 1;
+        } else if (ch == '.') {
+            if (digits == 0 or dots >= 3) return null;
+            ip[dots] = @intCast(octet);
+            dots += 1;
+            octet = 0;
+            digits = 0;
+        } else return null;
+    }
+    if (dots != 3 or digits == 0) return null;
+    ip[3] = @intCast(octet);
+    return ip;
 }
 
 // ── Reply buffer helpers ─────────────────────────────────────────────

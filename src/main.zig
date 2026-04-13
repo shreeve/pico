@@ -224,13 +224,25 @@ fn pollUart() void {
     while (rp2040.uartReadAvailable(rp2040.UART0_BASE)) {
         const ch = rp2040.uartRead(rp2040.UART0_BASE);
         if (ch == '\r' or ch == '\n') {
+            const cmd = cmd_buf[0..cmd_len];
             if (cmd_len == 6 and
-                cmd_buf[0] == 'r' and cmd_buf[1] == 'e' and
-                cmd_buf[2] == 'b' and cmd_buf[3] == 'o' and
-                cmd_buf[4] == 'o' and cmd_buf[5] == 't')
+                cmd[0] == 'r' and cmd[1] == 'e' and
+                cmd[2] == 'b' and cmd[3] == 'o' and
+                cmd[4] == 'o' and cmd[5] == 't')
             {
                 puts("[reboot] entering BOOTSEL mode...\n");
                 rp2040.resetToUsbBoot();
+            } else if (cmd_len == 4 and
+                cmd[0] == 'w' and cmd[1] == 'i' and
+                cmd[2] == 'f' and cmd[3] == 'i')
+            {
+                puts("[wifi] retrying join...\n");
+                _ = wifi.connect(build_config.ssid, build_config.pass);
+                if (wifi.isConnected()) {
+                    puts("[wifi] IP=");
+                    if (wifi.getIp()) |ip| puts(ip);
+                    puts("\n");
+                }
             }
             cmd_len = 0;
         } else if (cmd_len < cmd_buf.len) {
