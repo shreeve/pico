@@ -154,7 +154,7 @@ pub fn main() noreturn {
     // Subsystems are polled in a fixed order each iteration.
     while (true) {
         _ = runtime.poll();
-        pollUartCmd();
+        pollUart();
         wifi.poll();
         mqtt.poll();
         if (build_config.usb_host) {
@@ -218,7 +218,7 @@ const hello_script =
 var cmd_buf: [16]u8 = undefined;
 var cmd_len: usize = 0;
 
-fn pollUartCmd() void {
+fn pollUart() void {
     while (rp2040.uartReadAvailable(rp2040.UART0_BASE)) {
         const ch = rp2040.uartRead(rp2040.UART0_BASE);
         if (ch == '\r' or ch == '\n') {
