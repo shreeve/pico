@@ -150,7 +150,7 @@ pub fn resetState() void {
 
 const IDLE_TIMEOUT_MS: u64 = 30_000;
 
-pub fn pollTick() void {
+pub fn poll() void {
     if (!setup_done) return;
 
     const pp = pipe_in orelse return;

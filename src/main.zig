@@ -159,7 +159,7 @@ pub fn main() noreturn {
         mqtt.poll();
         if (build_config.usb_host) {
             usb_host.poll();
-            usb_ftdi.pollTick();
+            usb_ftdi.poll();
         }
         netif.poll(@truncate(hal.millis()));
         watchdog.feed();
