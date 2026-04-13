@@ -175,7 +175,76 @@ deterministic debugging — far beyond what SSH could offer.
 SSH is deferred to v2+ (Phase 5) and only justified if field
 operators need interactive shell access without physical serial.
 
-### 2. MQTT over TLS
+### 2. WebSocket REPL (browser-based interactive console)
+
+The missing piece between "serial REPL" and "MQTT automation" is a
+real-time interactive console accessible from any browser:
+
+```
+https://10.0.0.39/repl
+```
+
+Opens a terminal in your browser. You type JS, it evaluates on the
+device via MQuickJS, results stream back instantly over WebSocket.
+Works from your phone, laptop, or tablet — no SSH client, no special
+tools.
+
+```
+┌─────────────────────────────────────────┐
+│  piccolo repl — 10.0.0.39               │
+├─────────────────────────────────────────┤
+│  > 2 + 2                               │
+│  4                                      │
+│  > led.blink(200)                       │
+│  true                                   │
+│  > mqtt.publish("test", "hello")        │
+│  true                                   │
+│  > device.status()                      │
+│  { wifi: "connected", mqtt: "connected",│
+│    usb: "attached", heap: 5242880,      │
+│    uptime: 12345 }                      │
+│  >                                      │
+└─────────────────────────────────────────┘
+```
+
+**Implementation:** ESP-IDF includes an HTTP server with WebSocket
+support (`esp_http_server`). The device serves:
+
+- `GET /` — redirect to `/repl`
+- `GET /repl` — single HTML page with embedded JS terminal
+- `WS /ws` — WebSocket endpoint for bidirectional eval
+
+The HTML page is ~2 KB (a `<textarea>`, a WebSocket connection, and
+minimal CSS). Total implementation: ~200-300 lines of C + the HTML.
+
+**Why this is better than SSH:**
+
+| | SSH | WebSocket REPL |
+|--|-----|---------------|
+| Encryption | Yes | Yes (HTTPS/WSS) |
+| Interactive | Yes | Yes |
+| No special client needed | No | **Yes (any browser)** |
+| Mobile-friendly | Barely | **Yes** |
+| RAM cost | ~100-200 KB | **~10-20 KB** (httpd already in IDF) |
+| Attack surface | Large (daemon, PTY, auth) | **Small** (single endpoint + TLS) |
+| Fleet-scalable | No | Yes (each device at its own IP) |
+| Can embed device status | No | **Yes** (dashboard + REPL in one page) |
+
+**Authentication:** HTTP Basic Auth over TLS, or a device-specific
+token. No SSH key management, no authorized_keys, no PAM.
+
+**Three REPL surfaces, each for its purpose:**
+
+| Surface | Use case | Network required |
+|---------|----------|-----------------|
+| Serial (UART) | Development, recovery, always works | No |
+| WebSocket REPL | Interactive remote debugging | Yes (HTTPS) |
+| MQTT eval/result | Automation, fleet commands, scripting | Yes (MQTTS) |
+
+All three share the same MQuickJS engine and JS API. Code that works
+in one works in all three.
+
+### 3. MQTT over TLS
 
 Connect to any MQTT broker with certificate-based TLS:
 
@@ -363,20 +432,20 @@ esp32-piccolo/
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    FreeRTOS Tasks                        │
+│                    FreeRTOS Tasks                       │
 ├──────────────┬──────────────┬───────────────────────────┤
 │  Core 0      │  Core 1      │  Notes                    │
 ├──────────────┼──────────────┼───────────────────────────┤
 │  WiFi (IDF)  │  JS Runtime  │  JS pinned to Core 1      │
-│  MQTT (IDF)  │              │  WiFi internals on Core 0  │
-│  TCP/IP (IDF)│              │                            │
+│  MQTT (IDF)  │              │  WiFi internals on Core 0 │
+│  TCP/IP (IDF)│              │                           │
 ├──────────────┼──────────────┼───────────────────────────┤
-│  USB Host    │              │  High priority             │
-│  ASTM Parser │              │  Timing-sensitive          │
+│  USB Host    │              │  High priority            │
+│  ASTM Parser │              │  Timing-sensitive         │
 ├──────────────┼──────────────┼───────────────────────────┤
-│  SSH Server  │              │  Spawns per-connection     │
-│  Audit Log   │              │  Low priority background   │
-│  OTA Manager │              │  On-demand                 │
+│  SSH Server  │              │  Spawns per-connection    │
+│  Audit Log   │              │  Low priority background  │
+│  OTA Manager │              │  On-demand                │
 └──────────────┴──────────────┴───────────────────────────┘
 ```
 
@@ -606,8 +675,10 @@ available but secondary to the transport path being rock-solid.
 - [ ] WiFi manager with reconnect state machine
 - [ ] MQTT over TLS with esp-mqtt
 - [ ] Topic dispatch (piccolo/js, piccolo/led, piccolo/cmd)
+- [ ] Structured command protocol (JSON command/response)
 - [ ] MQuickJS compiles and runs on ESP32-S3
 - [ ] JS REPL over serial (UART) for development
+- [ ] WebSocket REPL over HTTPS (browser-based console)
 - [ ] LED control (on/off/toggle/blink)
 - [ ] NVS config storage
 - [ ] SNTP time sync
