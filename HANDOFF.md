@@ -241,16 +241,17 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
 5. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
 
+### Polish / consistency
+
+6. **Audit `bindings/` for internal consistency.** The JS-facing API files
+   in `bindings/` (console, gpio, timers, wifi, mqtt, storage, uart, usb,
+   spi, i2c) have not been reviewed for naming, lifecycle, and error
+   reporting consistency. Worth a pass when focusing on JS developer
+   experience.
+
 ### Deferred (acceptable for current use)
 
-6. **No TCP zero-window probes / persist timer.** If peer advertises zero
-   window and later reopens, connection can stall. Not needed for short
-   MQTT exchanges but required for long-lived connections.
-
-7. **No simultaneous open support.** SYN without ACK in `syn_sent` is
-   ignored. Extremely rare in practice, can be deferred indefinitely.
-
-8. **Production security**: signed updates, authenticated script upload,
+7. **Production security**: signed updates, authenticated script upload,
    JS sandboxing. Required before internet-facing deployment.
 
 ## Piccolo Xpress Details

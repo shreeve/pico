@@ -161,7 +161,7 @@ pub fn main() noreturn {
             usb_host.poll();
             usb_ftdi.pollTick();
         }
-        netif.tick(@truncate(hal.millis()));
+        netif.poll(@truncate(hal.millis()));
         watchdog.feed();
 
         const now = hal.millis();

@@ -30,6 +30,6 @@ pub fn stack() *Stack {
     return &instance;
 }
 
-pub fn tick(now_ms: u32) void {
+pub fn poll(now_ms: u32) void {
     instance.tick(now_ms);
 }
