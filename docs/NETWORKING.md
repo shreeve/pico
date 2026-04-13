@@ -3,29 +3,28 @@
 Practical implementation notes, current status, and near-term roadmap for the
 CYW43439 Wi-Fi and networking stack on Pico W / Pico 2 W.
 
-## Current state (April 10, 2026)
+## Current state (April 13, 2026)
 
 ### Proven on hardware
 - PIO SPI / gSPI transport at 31 MHz
-- firmware upload + NVRAM token + HT clock boot
+- Firmware upload + NVRAM token + HT clock boot
 - SDPCM/CDC IOCTL control plane
 - CLM upload and onboard LED control
 - Wi-Fi scan discovering nearby SSIDs and hidden networks
 - WPA2-PSK join with retry/cooldown handling
-- raw Ethernet TX/RX through the CYW43 data channel
+- Raw Ethernet TX/RX through the CYW43 data channel
 - DHCP client bound on the LAN without lwIP
 - ARP responder + client cache (8-entry, 5-min TTL)
-- DHCP lease-renewal logic
-- **IPv4 layer with generic demux (ICMP/UDP/TCP)**
-- **ICMP echo reply — device responds to ping**
+- IPv4 layer with generic demux (ICMP/UDP/TCP)
+- ICMP echo reply — device responds to ping
+- **TCP** — full handshake, bidirectional data, MSS negotiation, clean teardown
+- **Telnet shell** on port 23 — readline-lite with cursor movement, 4-entry history
+- **MQTT plaintext** (port 1883) — CONNECT, PUBLISH, SUBSCRIBE, PINGREQ with Mosquitto
+- **MQTT over TLS 1.2** (port 8883) — BearSSL handshake, encrypted bidirectional pub/sub
 
 ### Implemented but not yet validated on hardware
-- TCP/IP stack (`src/net/tcpip.zig`) — comptime-composed NetStack with multi-connection TCP, app-driven retransmit via AppVTable, work-flag output processing; hardened with RX checksum verification, ACK/sequence validation, proper FIN state machine (including `.closing`), FIN retransmission, RST for unmatched segments, duplicate SYN handling
-- MQTT 3.1.1 client (`src/bindings/mqtt.zig`) — CONNECT, PUBLISH, SUBSCRIBE, PINGREQ via AppVTable, QoS 0
 - Script push protocol (`src/net/script_push.zig`) — TCP listener on port 9001
 - Flash KV storage (`src/bindings/storage.zig`) — append-log read via XIP
-- Watchdog (`src/runtime/watchdog.zig`) — 8-second timeout, crash counter, safe-mode detection
-- Periodic timer tick — 10ms ALARM0-based interrupt enabling `wfe` idle
 - OTA-ready flash layout — firmware (768 KB) + staging (768 KB) + scripts (256 KB) + config (192 KB) + metadata (64 KB)
 
 ## Architecture
@@ -100,13 +99,12 @@ The stack in `src/net/tcpip.zig` is a comptime-parameterized `NetStack(Config)`:
 ## What is next
 
 1. ~~Validate TCP handshake~~ — **DONE** (telnet shell on port 23)
-2. **Test MQTT end-to-end** with a real Mosquitto broker (plaintext first)
-3. **Validate TLS on hardware** — BearSSL integrated, compiles, needs test.
-   TLS session adapter with ciphertext retention buffer bridges BearSSL ↔ TCP.
-   MQTT over TLS via `mqtt.connectBrokerTls()` (port 8883, known-key trust).
-4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
-5. **Build OTA bootloader** (immutable, verifies SHA-256, copies staging to active)
-6. **Production security**: signed updates, authenticated script upload, JS sandboxing
+2. ~~Test MQTT end-to-end~~ — **DONE** (plaintext + TLS, bidirectional pub/sub)
+3. ~~Validate TLS on hardware~~ — **DONE** (BearSSL ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+4. **Hook MQTT into JS runtime** — `mqtt.on("message", fn)` callback
+5. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
+6. **Build OTA bootloader** (immutable, verifies SHA-256, copies staging to active)
+7. **Production security**: signed updates, authenticated script upload, JS sandboxing
 
 ## TLS architecture
 
@@ -135,7 +133,7 @@ The stack in `src/net/tcpip.zig` is a comptime-parameterized `NetStack(Config)`:
                     └─────────────────┘
 ```
 
-BearSSL buffers: 4KB RX + 2KB TX I/O, ~10KB total per session.
+BearSSL buffers: 6KB RX + 2KB TX I/O, ~12KB total per session.
 Cipher suite: ECDHE_RSA_WITH_AES_128_GCM_SHA256 (TLS 1.2 only).
 Trust model: x509 known-key (pin broker's RSA public key).
 Entropy: ROSC jitter + timer LSBs → SHA-256 → HMAC-DRBG.

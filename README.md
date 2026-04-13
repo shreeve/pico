@@ -16,12 +16,14 @@ Proven on real Pico W hardware:
 
 - Custom CYW43439 WiFi driver (PIO SPI at 31 MHz)
 - WPA2-PSK join, DHCP client, ARP, IPv4, ICMP echo reply
-- Device responds to `ping` from the LAN
 - uIP-inspired TCP/IP stack with app-driven retransmission
+- **MQTT plaintext** (port 1883) — bidirectional pub/sub with Mosquitto
+- **MQTT over TLS 1.2** (port 8883) — BearSSL, ECDHE_RSA_WITH_AES_128_GCM_SHA256
+- Telnet shell with readline-lite (cursor movement, 4-entry history, Ctrl keys)
+- JavaScript eval over WiFi (`eval 2+2` returns `4` via telnet)
 - USB Host with FTDI driver + ASTM medical protocol parser
 - MQuickJS JavaScript engine running on device
-- Watchdog, periodic timer interrupt, `wfe` idle
-- UART `reboot` command for probe-free flashing via picotool
+- UART `reboot`/`wifi` commands for probe-free development
 
 The JS engine is [MQuickJS](https://bellard.org/mquickjs/) (Fabrice
 Bellard's micro JavaScript engine), which runs full programs in as little
@@ -128,7 +130,12 @@ pico/
 │   │   ├── icmp.zig       Echo reply (ping)
 │   │   ├── arp.zig        ARP responder + client cache
 │   │   ├── dhcp.zig       DHCP client
+│   │   ├── shell.zig      Telnet shell with readline + MQTT commands
 │   │   └── script_push.zig Script push protocol (port 9001)
+│   ├── tls/               TLS 1.2 via BearSSL
+│   │   ├── bearssl.zig    Zig bindings to BearSSL C API
+│   │   ├── tls.zig        TLS session adapter (TCP ↔ BearSSL)
+│   │   └── entropy.zig    ROSC entropy → SHA-256 → HMAC-DRBG
 │   ├── cyw43/             CYW43439 WiFi driver
 │   │   ├── cyw43.zig      Public API module
 │   │   ├── device.zig     Full lifecycle facade
@@ -153,7 +160,8 @@ pico/
 │   │   └── captive_portal.zig WiFi AP-mode provisioning (stub)
 │   └── libc/              Freestanding C stubs
 ├── ext/
-│   └── mquickjs/          MQuickJS engine (vendored)
+│   ├── mquickjs/          MQuickJS engine (vendored)
+│   └── bearssl/           BearSSL TLS library (vendored)
 ├── tools/
 │   └── uf2conv.zig        ELF → UF2 converter
 └── scripts/               Example JS scripts
@@ -180,14 +188,16 @@ pico/
 - [x] Custom IPv4/ICMP/ARP stack — device responds to ping
 - [x] USB host with FTDI + ASTM for Piccolo Xpress
 - [x] uIP-inspired TCP/IP stack with AppVTable retransmission
-- [x] MQTT client with app-driven TCP
+- [x] TCP validated on hardware (telnet shell on port 23)
+- [x] MQTT plaintext — bidirectional pub/sub with Mosquitto broker
+- [x] BearSSL TLS 1.2 — encrypted MQTT on port 8883
+- [x] Telnet shell with readline-lite (cursor, history, Ctrl keys)
 - [x] UF2 converter + picotool flash workflow
-- [x] Probe-free development (UART `reboot` + picotool)
-- [ ] TCP handshake validation on hardware
-- [ ] MQTT end-to-end with Mosquitto broker
-- [ ] BearSSL integration for TLS
+- [x] Probe-free development (UART `reboot`/`wifi` + picotool)
+- [ ] MQTT → JS callback integration
 - [ ] Flash write driver for KV and OTA
 - [ ] OTA bootloader with staged updates
+- [ ] Peripheral bindings (ADC, PWM, I2C, SPI)
 - [ ] Production security (signed updates, JS sandboxing)
 
 ## License

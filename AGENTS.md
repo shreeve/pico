@@ -21,11 +21,13 @@ There is also a secondary objective: a host-side CLI/debug tool described in `PI
 
 ## Current Milestone
 
-**ACHIEVED: Custom TCP/IP stack with ICMP ping validated on hardware.**
+**ACHIEVED: MQTT over TLS 1.2 validated on hardware.**
 
-The full path from bare metal to pingable device: PIO SPI → CYW43 firmware → IOCTL → Wi-Fi scan → WPA2-PSK join → Ethernet TX/RX → DHCP → IPv4 → ICMP echo reply. Device responds to `ping` from the LAN.
+Full encrypted path proven: WiFi → TCP → TLS 1.2 (BearSSL) → MQTT → bidirectional
+pub/sub with Mosquitto broker. Also proven: plaintext MQTT, telnet shell with
+readline, JS eval over WiFi, ICMP ping, DHCP, ARP — the full bare-metal stack.
 
-**Next milestone: TCP handshake validation, then MQTT broker connection.**
+**Next milestone: Hook MQTT into JS runtime, then flash write driver for OTA.**
 
 ## Build & Flash Workflow
 
@@ -128,6 +130,14 @@ These are real bugs we hit and fixed. Do NOT reintroduce them:
 23. **TLS records cannot be regenerated for TCP retransmit**: The TCP stack's `produce_tx()` pattern assumes payload can be re-created on demand. TLS sequence numbers advance per record, making re-encryption produce different ciphertext. The TLS adapter must maintain a ciphertext retention buffer between BearSSL sendrec output and TCP ACK.
 
 24. **BearSSL `resume` is a Zig keyword**: Parameter names from the C API that clash with Zig keywords must be renamed in bindings (e.g. `resume` → `resume_session`).
+
+25. **RSA key for known-key pinning must be static**: BearSSL's `br_x509_knownkey_init_rsa` stores pointers to the `br_rsa_public_key` struct and its `n`/`e` buffers. Stack-local key data causes signature verification failure (error 27) because the pointers dangle after the function returns.
+
+26. **`br_prng_seeder_system` needs a freestanding stub**: BearSSL's engine init references this symbol for auto-seeding. On bare metal, provide a stub returning NULL. We seed manually via ROSC entropy + `engineInjectEntropy`.
+
+27. **Telnet needs WILL ECHO + SUPPRESS-GO-AHEAD for character mode**: Without these IAC negotiations on connect, telnet clients buffer input in line mode and arrow keys show as `^[[A` instead of being sent as escape sequences.
+
+28. **WPA3/mixed-mode APs break WPA2 join**: CYW43 WPA2-PSK handshake gets consistent DEAUTH type=6 from APs running WPA3 or WPA2/WPA3 transition mode. Set router to WPA2-only or use a simple AP (iPhone hotspot works).
 
 ## Zig 0.15.2 Key Points
 

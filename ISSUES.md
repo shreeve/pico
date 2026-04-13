@@ -60,14 +60,13 @@
 
 ## Open Issues
 
-1. **TCP handshake not yet validated on hardware.** The TCP state machine
-   in `net/tcpip.zig` has been hardened (sequence validation, ACK checks,
-   proper FIN state transitions, checksum verification, RST generation)
-   but no TCP connection has been established on real hardware yet.
+1. **~~TCP handshake not yet validated on hardware.~~** — Fixed.
+   Telnet shell on port 23 proves full TCP lifecycle. MQTT uses TCP
+   for both plaintext and TLS connections.
 
-2. **MQTT not yet tested with a real broker.** The MQTT client in
-   `bindings/mqtt.zig` implements AppVTable and builds correct MQTT
-   packets, but has not been tested against Mosquitto or any broker.
+2. **~~MQTT not yet tested with a real broker.~~** — Fixed.
+   Bidirectional pub/sub validated with Mosquitto on both plaintext
+   (port 1883) and TLS (port 8883).
 
 3. **Flash KV write not implemented.** `bindings/storage.zig` can read
    from flash via XIP but cannot write. Writing requires a RAM-resident
@@ -80,8 +79,14 @@
    (768 KB staging area) but no bootloader, image verification, or
    download path exists yet.
 
-6. **No TLS.** BearSSL is the recommended library but not yet integrated.
-   Required for MQTT over TLS (port 8883) and HTTPS for OTA downloads.
+6. **~~No TLS.~~** — Fixed.
+   BearSSL integrated and validated on hardware. TLS 1.2 with
+   ECDHE_RSA_WITH_AES_128_GCM_SHA256, known-key trust (RSA key pinning).
+
+7. **WPA3/mixed-mode AP incompatibility.** CYW43 WPA2-PSK 4-way handshake
+   gets consistent DEAUTH type=6 from APs running WPA3 or WPA2/WPA3
+   transition mode. Workaround: set router to WPA2-PSK only, or use a
+   simple AP like iPhone hotspot. May need CYW43 SAE support to fix.
 
 7. **~~ARP-pending silently drops first TCP segment~~** — Fixed.
    `emitSegment()` now returns `EmitResult` (`.sent` or `.arp_pending`).

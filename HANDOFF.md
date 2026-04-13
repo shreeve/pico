@@ -3,7 +3,7 @@
 This document captures the full context so a new AI or developer can pick
 up exactly where we left off.
 
-## Current State (April 12, 2026)
+## Current State (April 13, 2026)
 
 ### Branch: `main` — proven on hardware
 
@@ -13,50 +13,48 @@ Everything is on `main`. No feature branches.
 - CYW43 WiFi: PIO SPI → firmware upload → scan → WPA2-PSK join → DHCP
 - ICMP echo reply (device responds to `ping`)
 - TCP: full handshake, bidirectional data, MSS negotiation, clean teardown
-  (72 segments received, 31 sent, 0 retransmissions in test session)
-- Telnet shell on port 23: interactive remote console over WiFi
+- Telnet shell on port 23 with readline-lite (cursor, history, Ctrl keys)
 - JavaScript eval over WiFi: `eval 2 + 2` returns `4` via telnet
+- MQTT plaintext (port 1883): bidirectional pub/sub with Mosquitto broker
+- MQTT over TLS 1.2 (port 8883): BearSSL handshake + encrypted pub/sub
 - IPv4 layer with generic demux (ICMP/UDP/TCP), checksum validation, routing
 - UDP listener dispatch: DHCP registers on port 68, stack routes by port
 - ARP client/cache with outbound resolution and gratuitous ARP
 - MQuickJS running JavaScript (`console.log("pico is alive!")`)
 - USB Host with FTDI driver + ASTM protocol for Piccolo Xpress analyzer
-- UART `reboot` command triggers ROM `reset_usb_boot()` for probe-free flashing
+- UART `reboot` and `wifi` commands for probe-free dev workflow
 - Watchdog (8s) with crash counter and safe-mode detection
 - 10ms periodic timer interrupt enabling `wfe` idle
 
 **Not yet validated on hardware:**
-- MQTT broker connection (client code exists, TCP is proven)
 - Script push over TCP port 9001 (listener registered, untested)
-- TLS 1.2 (BearSSL integrated, code compiles, needs hardware test — see below)
 - OTA firmware update
 - Flash KV write (read works via XIP, write needs RAM flash driver)
 
+**Known limitation:**
+- WPA3/mixed-mode APs cause consistent DEAUTH during WPA2 4-way handshake.
+  Router must be set to WPA2-PSK only. Simple APs (iPhone hotspot) work fine.
+
 ### Recent Changes (this session)
 
-BearSSL TLS 1.2 integration for secure MQTT:
+BearSSL TLS + MQTT end-to-end + readline shell:
 
 1. **BearSSL vendored** — `ext/bearssl/` (293 C source files, MIT license).
-   All sources compiled for ARM Cortex-M0+ with `BR_LOMUL=1` for efficient
-   32-bit multiply paths. Platform-specific code (x86, POWER8) compiles to
-   empty translation units via `#if` guards.
-2. **Libc shim: `limits.h`** — added for BearSSL's `inner.h` dependency.
-3. **`src/tls/bearssl.zig`** — Zig bindings to BearSSL C API. Wraps engine
-   state machine, buffer access, client context, x509 known-key trust,
-   SHA-256, HMAC-DRBG, and cipher suite configuration.
-4. **`src/tls/entropy.zig`** — ROSC + timer jitter entropy collector.
-   Oversamples 4096 ROSC bits + 64 timer jitter samples, conditions through
-   SHA-256, seeds BearSSL HMAC-DRBG. Supports periodic reseed.
-5. **`src/tls/tls.zig`** — TLS session adapter bridging BearSSL ↔ TCP
-   AppVTable. Key design: ciphertext TX retention buffer (ring) holds
-   encrypted bytes between BearSSL output and TCP ACK — TLS records are
-   stateful and cannot be regenerated for TCP retransmit. ~10KB RAM per
-   session (4KB RX + 2KB TX BearSSL I/O + 2KB retention + 2KB app queues).
-6. **MQTT over TLS** — `mqtt.connectBrokerTls()` connects through TLS session
-   with known-key trust (pin broker RSA public key). In TLS mode, MQTT sends
-   packets eagerly via `tls.send()` instead of the lazy `produce_tx` pattern.
-   Cipher suite: ECDHE_RSA_WITH_AES_128_GCM_SHA256.
-7. **Firmware size**: 381KB payload (763KB UF2), fits in 768KB partition.
+   Compiled for Cortex-M0+ with `BR_LOMUL=1`. Adds ~68KB flash when TLS active.
+2. **TLS 1.2 validated on hardware** — full ECDHE_RSA_WITH_AES_128_GCM_SHA256
+   handshake on Cortex-M0+ at 125 MHz, no hardware crypto. Entropy from
+   ROSC jitter + SHA-256 conditioning → HMAC-DRBG.
+3. **MQTT plaintext validated** — connect, publish, subscribe, receive via
+   Mosquitto broker. Auto-subscribes to `pico/cmd` on CONNACK.
+4. **MQTT over TLS validated** — bidirectional encrypted pub/sub on port 8883.
+   Known-key trust (pin broker RSA public key).
+5. **Readline-lite for telnet shell** — cursor movement (arrows, Home/End),
+   4-entry command history (up/down with scratch-line preservation),
+   Ctrl-A/E/K/U/C, proper backspace/delete. Telnet character-mode negotiation
+   (WILL ECHO, SUPPRESS-GO-AHEAD).
+6. **Shell commands** — `mqtt <ip>`, `mqtts <ip>`, `pub <topic> <msg>`,
+   `sub <topic>`, `mqtt?`. UART `wifi` command for post-boot retry.
+7. **Firmware size**: 464KB payload with all features active (fits 768KB).
 
 ### Previous Session Changes
 
@@ -134,7 +132,7 @@ src/
 │   ├── icmp.zig              Echo reply (ping)
 │   ├── arp.zig               ARP responder + 8-entry client cache
 │   ├── dhcp.zig              DHCP client with lease renewal
-│   ├── shell.zig             Telnet shell (port 23) — remote console + JS eval
+│   ├── shell.zig             Telnet shell (port 23) — readline, history, MQTT cmds
 │   └── script_push.zig       Script push protocol (TCP port 9001)
 ├── cyw43/                    CYW43439 WiFi driver
 │   ├── cyw43.zig             Public API module
@@ -262,51 +260,34 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 
 ## What Is Next
 
-### Achieved (this session)
+### Achieved (this + previous sessions)
 
-1. **TCP validated on hardware** — telnet shell on port 23 proves full TCP
-   lifecycle: SYN handshake, bidirectional data, MSS negotiation, clean
-   teardown. 72 segments received, 31 sent, 0 retransmissions.
-
-2. **Telnet shell working** — interactive remote console over WiFi with
-   commands: help, stats, ip, uptime, mem, eval, led, reboot, quit.
-
-3. **JavaScript eval over WiFi** — `eval 2 + 2` returns `4` over TCP.
-   MQuickJS executes JS expressions from telnet and returns results.
+1. TCP validated — telnet shell on port 23, full lifecycle proven
+2. Telnet shell with readline-lite — line editing, history, character mode
+3. JavaScript eval over WiFi — `eval 2+2` returns `4` via telnet
+4. MQTT plaintext validated — bidirectional pub/sub with Mosquitto
+5. MQTT over TLS 1.2 validated — BearSSL handshake + encrypted pub/sub
+6. BearSSL integrated — 293 C sources, ECDHE_RSA_WITH_AES_128_GCM_SHA256
 
 ### Immediate next
 
-4. **Validate TLS on hardware** — BearSSL is integrated and compiles.
-   Test with a Mosquitto broker using TLS on port 8883. Steps:
-   - Set up Mosquitto with a self-signed RSA cert on the LAN
-   - Extract the broker's RSA public key for known-key pinning
-   - Call `mqtt.connectBrokerTls()` with the broker IP and key
-   - Verify TLS handshake completes (watch `[tls]` log messages)
-   - Test MQTT publish/subscribe over the TLS connection
+7. **Hook MQTT into JS runtime** — `mqtt.on("message", fn)` callback so
+   scripts can react to incoming MQTT messages.
 
-5. **Test MQTT end-to-end** (plaintext first, then TLS).
-   The client code exists (`bindings/mqtt.zig`); TCP is proven.
-   Plaintext: `mqtt.connectBroker(ip, 1883, "pico")`
-   TLS: `mqtt.connectBrokerTls(ip, 8883, "pico", "broker", &key)`
+8. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
+
+9. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
 
 ### Near-term
 
-6. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
-7. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
-8. **Peripheral bindings** (ADC, PWM, I2C, SPI) to enable real hardware JS projects
+10. **Peripheral bindings** (ADC, PWM, I2C, SPI) to enable real hardware JS projects
+11. **Audit `bindings/` for consistency** — naming, lifecycle, error reporting
+12. **Investigate WPA3 support** — CYW43 may support SAE; current driver only does WPA2
 
-### Polish / consistency
+### Deferred
 
-6. **Audit `bindings/` for internal consistency.** The JS-facing API files
-   in `bindings/` (console, gpio, timers, wifi, mqtt, storage, uart, usb,
-   spi, i2c) have not been reviewed for naming, lifecycle, and error
-   reporting consistency. Worth a pass when focusing on JS developer
-   experience.
-
-### Deferred (acceptable for current use)
-
-7. **Production security**: signed updates, authenticated script upload,
-   JS sandboxing. Required before internet-facing deployment.
+13. **Production security**: signed updates, authenticated script upload,
+    JS sandboxing. Required before internet-facing deployment.
 
 ## Piccolo Xpress Details
 
@@ -320,6 +301,7 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 ## Key Documentation
 
 - `AGENTS.md` — AI agent instructions and RP2040 gotchas
+- `docs/JAVASCRIPT.md` — JS engine, API reference, MQuickJS details
 - `docs/NETWORKING.md` — WiFi/networking status and architecture
 - `docs/CYW43.md` — CYW43 bring-up reference
 - `ISSUES.md` — Current issue tracker (resolved + open)
