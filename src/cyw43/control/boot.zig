@@ -272,6 +272,7 @@ pub fn boot(ctx: *Context) types.Error!void {
         }
 
         ctx.puts("[dhcp] starting...\n");
+        dhcp.init();
         dhcp.start();
 
         var dhcp_timeout: u32 = 0;

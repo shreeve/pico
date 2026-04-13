@@ -1,4 +1,11 @@
-// pico main entry point.
+// pico — main entry point and cooperative superloop.
+//
+// Execution model:
+//   Single-core cooperative superloop on RP2040. No RTOS, no threads.
+//   All forward progress occurs through explicit poll() calls in the
+//   main loop below. Each subsystem does bounded work per call.
+//   Interrupt handlers only set flags or enqueue data; real processing
+//   happens in the superloop.
 //
 // Boot flow:
 //   1. Platform init (clocks @ 125 MHz, peripherals)
@@ -8,12 +15,7 @@
 //   5. Init MQuickJS VM
 //   6. Init services (wifi, storage, etc.)
 //   7. Load script from flash (if present)
-//   8. Enter cooperative main loop
-//
-// Main loop scheduling:
-//   Single-core, non-preemptive. Each subsystem is polled explicitly
-//   in a fixed order. All poll functions must be short and non-blocking.
-//   The event loop handles timers and deferred callbacks only.
+//   8. Enter superloop
 
 comptime {
     _ = @import("platform/startup.zig");
@@ -24,7 +26,7 @@ const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const fmt = @import("lib/fmt.zig");
 const memory = @import("runtime/memory_pool.zig");
-const event_loop = @import("runtime/event_loop.zig");
+const poll = @import("runtime/poll.zig");
 const netif = @import("net/stack.zig");
 const watchdog = @import("runtime/watchdog.zig");
 const engine = @import("js/runtime.zig");
@@ -57,16 +59,7 @@ const BANNER =
     \\
 ;
 
-const putc = fmt.putc;
 const puts = fmt.puts;
-
-fn printU32(val: u32) void {
-    fmt.putUnsigned(u32, val);
-}
-
-fn printU64(val: u64) void {
-    fmt.putUnsigned(u64, val);
-}
 
 pub fn main() noreturn {
     // 1. Platform init (clocks @ 125 MHz)
@@ -85,7 +78,7 @@ pub fn main() noreturn {
     puts(BANNER);
     puts("[boot] platform: RP2040 @ 125 MHz\n");
     puts("[boot] net stack: ");
-    printU32(@intCast(netif.Stack.memoryUsage()));
+    fmt.putDec(@intCast(netif.Stack.memoryUsage()));
     puts(" bytes\n");
 
     if (watchdog.shouldEnterSafeMode()) {
@@ -96,7 +89,7 @@ pub fn main() noreturn {
     // 3. Memory
     memory.init();
     puts("[boot] memory pool: ");
-    printU32(@intCast(memory.totalSize()));
+    fmt.putDec(@intCast(memory.totalSize()));
     puts(" bytes\n");
 
     // 4. Config
@@ -106,7 +99,7 @@ pub fn main() noreturn {
     // 5. JS VM
     const heap_kb = config.get().vm_heap_kb;
     puts("[boot] JS VM heap: ");
-    printU32(heap_kb);
+    fmt.putDec(heap_kb);
     puts(" KB\n");
 
     engine.init(.{
@@ -136,8 +129,6 @@ pub fn main() noreturn {
     if (build_config.usb_host) {
         usb_host.init();
         usb_js.initCallbacks();
-        event_loop.registerIO(usb_host.poll) catch {};
-        event_loop.registerIO(usb_ftdi.pollTick) catch {};
         puts("[boot] USB host ready\n");
     }
 
@@ -149,7 +140,7 @@ pub fn main() noreturn {
     _ = engine.eval(hello_script, "<boot>") catch {};
 
     puts("[boot] uptime: ");
-    printU64(hal.millis());
+    fmt.putUnsigned(u64, hal.millis());
     puts(" ms\n");
     // Start watchdog (8 second timeout)
     watchdog.init(8000);
@@ -160,20 +151,26 @@ pub fn main() noreturn {
     // Event loop with periodic heartbeat
     var heartbeat: u32 = 0;
     var next_heartbeat = hal.millis() + 5000;
+    // Cooperative superloop: all forward progress happens here.
+    // Subsystems are polled in a fixed order each iteration.
     while (true) {
-        _ = event_loop.step();
+        _ = poll.step();
         pollUartCmd();
         wifi.poll();
         mqtt.poll();
+        if (build_config.usb_host) {
+            usb_host.poll();
+            usb_ftdi.pollTick();
+        }
         netif.tick(@truncate(hal.millis()));
         watchdog.feed();
 
         const now = hal.millis();
         if (now >= next_heartbeat) {
             puts("[heartbeat ");
-            printU32(heartbeat);
+            fmt.putDec(heartbeat);
             puts("] uptime ");
-            printU64(now / 1000);
+            fmt.putUnsigned(u64, now / 1000);
             puts("s\n");
             heartbeat +%= 1;
             next_heartbeat = now + 5000;
@@ -204,7 +201,7 @@ fn loadStoredScript() void {
 
     const script = base[4 .. 4 + len];
     puts("[boot] loading stored script (");
-    printU32(len);
+    fmt.putDec(len);
     puts(" bytes)\n");
     _ = engine.eval(script, "<flash>") catch {
         puts("[boot] stored script error\n");

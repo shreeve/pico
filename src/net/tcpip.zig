@@ -13,6 +13,8 @@
 const ipv4 = @import("ipv4.zig");
 const byteutil = @import("../lib/byteutil.zig");
 
+pub const UdpHandler = *const fn (src_ip: [4]u8, src_port: u16, payload: []const u8) void;
+
 pub const Config = struct {
     enable_arp: bool = true,
     enable_icmp: bool = true,
@@ -21,6 +23,7 @@ pub const Config = struct {
 
     tcp_conn_count: usize = 4,
     tcp_listener_count: usize = 2,
+    udp_listener_count: usize = 4,
     arp_entries: usize = 8,
     rx_ring_count: usize = 3,
     mtu: usize = 1500,
@@ -165,6 +168,12 @@ pub fn NetStack(comptime cfg: Config) type {
         app: ?AppVTable = null,
     };
 
+    const UdpListener = struct {
+        used: bool = false,
+        port: u16 = 0,
+        handler: ?UdpHandler = null,
+    };
+
     return struct {
         const Self = @This();
 
@@ -172,6 +181,7 @@ pub fn NetStack(comptime cfg: Config) type {
         rx_slots: [cfg.rx_ring_count]RxSlot,
         conns: [cfg.tcp_conn_count]Connection,
         listeners: [cfg.tcp_listener_count]Listener,
+        udp_listeners: [cfg.udp_listener_count]UdpListener,
         stats: Stats,
         ticks: u32,
         isn_secret: u32,
@@ -191,6 +201,7 @@ pub fn NetStack(comptime cfg: Config) type {
                 .rx_slots = [_]RxSlot{.{}} ** cfg.rx_ring_count,
                 .conns = [_]Connection{.{}} ** cfg.tcp_conn_count,
                 .listeners = [_]Listener{.{}} ** cfg.tcp_listener_count,
+                .udp_listeners = [_]UdpListener{.{}} ** cfg.udp_listener_count,
                 .stats = .{},
                 .ticks = 0,
                 .isn_secret = 0x6d2b79f5,
@@ -965,6 +976,31 @@ pub fn NetStack(comptime cfg: Config) type {
                 }
             }
             return false;
+        }
+
+        // ── UDP listener ─────────────────────────────────────
+
+        pub fn udpListen(self: *Self, port: u16, handler: UdpHandler) bool {
+            for (&self.udp_listeners) |*l| {
+                if (!l.used) {
+                    l.* = .{ .used = true, .port = port, .handler = handler };
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        pub fn udpInput(self: *Self, src_ip: [4]u8, udp_data: []const u8) void {
+            if (udp_data.len < 8) return;
+            const src_port = (@as(u16, udp_data[0]) << 8) | udp_data[1];
+            const dst_port = (@as(u16, udp_data[2]) << 8) | udp_data[3];
+            const payload = udp_data[8..];
+            for (&self.udp_listeners) |*l| {
+                if (l.used and l.port == dst_port) {
+                    if (l.handler) |h| h(src_ip, src_port, payload);
+                    return;
+                }
+            }
         }
 
         // ── TCP close request ────────────────────────────────

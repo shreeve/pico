@@ -6,16 +6,11 @@
 //
 // Reference: RFC 791 (IPv4)
 
-const dhcp = @import("dhcp.zig");
 const arp_mod = @import("arp.zig");
 const icmp = @import("icmp.zig");
 const netif = @import("stack.zig");
 const core = @import("../cyw43/device.zig");
 const byteutil = @import("../lib/byteutil.zig");
-
-fn getStack() *netif.Stack {
-    return netif.stack();
-}
 
 pub const PROTO_ICMP: u8 = 1;
 pub const PROTO_TCP: u8 = 6;
@@ -64,7 +59,9 @@ pub fn handlePacket(ip_data: []const u8) void {
         },
         PROTO_UDP => {
             s.stats.udp_rx += 1;
-            dhcp.handleUdp(payload);
+            var src_arr: [4]u8 = undefined;
+            @memcpy(&src_arr, src_ip[0..4]);
+            s.udpInput(src_arr, payload);
         },
         PROTO_TCP => {
             var src_arr: [4]u8 = undefined;
@@ -78,14 +75,14 @@ pub fn handlePacket(ip_data: []const u8) void {
 fn isForUs(dst: []const u8) bool {
     if (dst[0] == 255 and dst[1] == 255 and dst[2] == 255 and dst[3] == 255) return true;
 
-    const lip = getStack().local_ip;
+    const lip = netif.stack().local_ip;
     if (lip[0] == 0 and lip[1] == 0 and lip[2] == 0 and lip[3] == 0) return true;
 
     if (dst[0] == lip[0] and dst[1] == lip[1] and
         dst[2] == lip[2] and dst[3] == lip[3]) return true;
 
     const local = ipToU32(&lip);
-    const mask = ipToU32(&getStack().subnet_mask);
+    const mask = ipToU32(&netif.stack().subnet_mask);
     const d = ipToU32(dst[0..4]);
     if (d == ((local & mask) | ~mask)) return true;
 
@@ -125,7 +122,7 @@ pub fn sendPacket(dst_ip: [4]u8, protocol: u8, payload: []const u8) !void {
     ip[9] = protocol;
     ip[10] = 0;
     ip[11] = 0;
-    @memcpy(ip[12..16], &getStack().local_ip);
+    @memcpy(ip[12..16], &netif.stack().local_ip);
     @memcpy(ip[16..20], &dst_ip);
 
     const cksum = ipChecksum(ip[0..20]);
@@ -138,16 +135,16 @@ pub fn sendPacket(dst_ip: [4]u8, protocol: u8, payload: []const u8) !void {
 }
 
 fn resolveNextHop(dst: [4]u8) ?[4]u8 {
-    const lip = getStack().local_ip;
+    const lip = netif.stack().local_ip;
     const local = ipToU32(&lip);
-    const mask = ipToU32(&getStack().subnet_mask);
+    const mask = ipToU32(&netif.stack().subnet_mask);
     const d = ipToU32(&dst);
 
     if (local == 0) return null;
 
     if ((d & mask) == (local & mask)) return dst;
 
-    const gw = getStack().gateway_ip;
+    const gw = netif.stack().gateway_ip;
     if (gw[0] == 0 and gw[1] == 0 and gw[2] == 0 and gw[3] == 0) return null;
 
     return gw;

@@ -11,10 +11,6 @@ const netif = @import("stack.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
 
-fn localIp() [4]u8 {
-    return netif.stack().local_ip;
-}
-
 const CACHE_SIZE = 8;
 const ENTRY_TTL_MS: u64 = 300_000; // 5 minutes
 
@@ -51,7 +47,7 @@ pub fn resolve(ip: [4]u8) ?[6]u8 {
 }
 
 pub fn sendGratuitous() void {
-    const lip = localIp();
+    const lip = netif.stack().local_ip;
     if (lip[0] == 0 and lip[1] == 0) return;
 
     var frame: [42]u8 = undefined;
@@ -87,7 +83,7 @@ pub fn handlePacket(eth_frame: []const u8) void {
 
     if (operation == 1) {
         const target_ip = a[24..28];
-        const lip = localIp();
+        const lip = netif.stack().local_ip;
         if (lip[0] == 0 and lip[1] == 0) return;
         if (!ipEq(target_ip, &lip)) return;
 
@@ -105,7 +101,7 @@ pub fn handlePacket(eth_frame: []const u8) void {
 // ── Outbound ARP request ─────────────────────────────────────────────
 
 fn sendRequest(target_ip: [4]u8) void {
-    const lip = localIp();
+    const lip = netif.stack().local_ip;
     if (lip[0] == 0 and lip[1] == 0) return;
 
     var frame: [42]u8 = undefined;

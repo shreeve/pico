@@ -39,6 +39,10 @@ pub const putIp = fmt.putIp;
 
 // ── Public API ────────────────────────────────────────────────────────
 
+pub fn init() void {
+    _ = netif.stack().udpListen(68, handleUdpPacket);
+}
+
 pub fn start() void {
     xid +%= 1;
     dhcp_state = .discovering;
@@ -71,18 +75,11 @@ pub fn tick() void {
 }
 
 /// Called from ipv4.handlePacket — receives UDP payload (IP header already stripped).
-pub fn handleUdp(udp_data: []const u8) void {
+fn handleUdpPacket(_: [4]u8, src_port: u16, payload: []const u8) void {
     if (dhcp_state == .idle or dhcp_state == .bound) return;
-    if (udp_data.len < 8) return;
-
-    const src_port = (@as(u16, udp_data[0]) << 8) | udp_data[1];
-    const dst_port = (@as(u16, udp_data[2]) << 8) | udp_data[3];
-
-    if (src_port != 67 or dst_port != 68) return;
-    if (udp_data.len < 8 + 236 + 4) return;
-
-    const bootp = udp_data[8..];
-    handleDhcp(bootp);
+    if (src_port != 67) return;
+    if (payload.len < 236 + 4) return;
+    handleDhcp(payload);
 }
 
 // ── DHCP message handling ─────────────────────────────────────────────

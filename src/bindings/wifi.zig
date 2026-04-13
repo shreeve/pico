@@ -77,6 +77,7 @@ pub fn connect(ssid: []const u8, password: []const u8) bool {
     };
 
     state = .connected;
+    dhcp_mod.init();
     dhcp_mod.start();
     arp_mod.sendGratuitous();
     return true;
