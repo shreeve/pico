@@ -40,7 +40,7 @@ REPL for interactive development and file management.
 │  Piccolo Xpress @ 9600 8N1               │
 ├──────────────────────────────────────────┤
 │        ESP-IDF / FreeRTOS                │
-│  WiFi · lwIP · mbedTLS · NVS · OTA      │
+│  WiFi · lwIP · mbedTLS · NVS · OTA       │
 ├──────────────────────────────────────────┤
 │           ESP32-S3 Hardware              │
 │  240 MHz dual-core · 8 MB PSRAM · radio  │
@@ -49,15 +49,18 @@ REPL for interactive development and file management.
 
 ## Core Features
 
-### 1. SSH Shell with JS REPL
+### 1. Remote Command Surface
 
-SSH directly into the device (no telnet, encrypted from day one):
+**v1: MQTT + serial REPL.** All device control, JS eval, script
+push, and diagnostics work through the MQTT command channel and a
+serial (UART) REPL for local development. This avoids the complexity,
+attack surface, and RAM pressure of an on-device SSH server.
 
-```bash
-ssh piccolo@10.0.0.39
-```
+**v2+ (optional): SSH shell.** If field operators need interactive
+shell access without physical serial, add a lightweight SSH server
+(Dropbear or wolfSSH). See Phase 5.
 
-Interactive session:
+**Serial REPL (always available via UART):**
 
 ```
 piccolo v0.1.0 — type 'help' for commands
@@ -67,23 +70,32 @@ piccolo v0.1.0 — type 'help' for commands
 true
 > mqtt.publish("piccolo/status", "online")
 true
-> ls /scripts
-  main.js       1.2 KB  2026-04-13 14:30
-  astm_handler.js  820 B  2026-04-13 14:25
 > run main.js
 [js] running main.js...
 ok
-> cat /scripts/main.js
-mqtt.on("message", function(topic, payload) {
-    console.log("Got: " + topic + " = " + payload);
-});
-console.log("main.js loaded");
+> status
+WiFi: connected (10.0.0.39)
+MQTT: connected (broker.example.com:8883)
+USB:  Piccolo Xpress attached
+Heap: 5.2 MB free
+Up:   3h 22m
 ```
 
-**Implementation:** Lightweight SSH server (Dropbear or libssh2-embedded)
-running over ESP-IDF's TCP/mbedTLS stack. The SSH channel feeds a
-readline-equipped REPL that evals JS via MQuickJS. File commands
-(ls, cat, put, rm) operate on a LittleFS partition for script storage.
+**MQTT remote commands (encrypted, from anywhere):**
+
+```bash
+# Execute JS remotely
+mosquitto_pub -t "piccolo/abc123/js" -m 'led.blink(100)'
+
+# Push a script
+mosquitto_pub -t "piccolo/abc123/script/main.js" -m '$(cat main.js)'
+
+# Control LED
+mosquitto_pub -t "piccolo/abc123/led" -m "on"
+
+# Trigger OTA
+mosquitto_pub -t "piccolo/abc123/ota" -m "https://releases.example.com/v0.2.0.bin"
+```
 
 ### 2. MQTT over TLS
 
@@ -320,43 +332,47 @@ esp32-piccolo/
 protocol framing, transport, and security. JS processes structured
 data and makes decisions.
 
-## SSH Server Options
+## Serial / MQTT Command Reference
 
-Two viable embedded SSH libraries:
-
-### Option A: Dropbear (recommended)
-- ~100 KB flash, battle-tested, widely used in embedded Linux
-- Supports password auth + public key
-- Single-process model fits FreeRTOS well
-- Has been ported to ESP32 before (community examples)
-- License: MIT-like
-
-### Option B: libssh (wolfSSH)
-- wolfSSL ecosystem, designed for embedded
-- Commercial support available
-- Good ESP32 integration
-- License: GPLv3 or commercial
-
-### SSH Shell Commands
+### Serial REPL commands (UART, always available)
 
 ```
 help                    Show available commands
 eval <js>               Evaluate JavaScript expression
 run <file>              Execute a script from /scripts
-ls [path]               List files
+ls [path]               List files on LittleFS
 cat <file>              Show file contents
-put <file> <content>    Write a file (small files via shell)
-upload <file>           Receive file via SSH SCP/SFTP
-rm <file>               Delete a file
-mqtt <ip>               Connect to MQTT broker (plaintext)
-mqtts <ip>              Connect to MQTT broker (TLS)
-pub <topic> <msg>       Publish MQTT message
-sub <topic>             Subscribe to topic
+status                  System status (WiFi, MQTT, USB, heap, uptime)
 led on|off|toggle|blink LED control
-status                  System status (WiFi, MQTT, USB, heap)
 reboot                  Restart device
-ota <url>               Trigger firmware update
+wifi                    Retry WiFi connection
 ```
+
+### MQTT command topics (remote, encrypted)
+
+```
+piccolo/<id>/js         Execute payload as JavaScript
+piccolo/<id>/led        on, off, toggle, blink, blink 200
+piccolo/<id>/cmd        Application messages → JS handler
+piccolo/<id>/config     Update device configuration
+piccolo/<id>/ota        Trigger firmware update (URL payload)
+piccolo/<id>/script/<n> Push script file (filename in topic, JS in payload)
+```
+
+### SSH Shell (v2+, optional)
+
+If SSH is added later, the serial REPL commands carry over directly.
+Additional SSH-only capabilities:
+
+```
+put <file> <content>    Write a file via shell
+upload <file>           Receive file via SCP/SFTP
+rm <file>               Delete a file
+```
+
+Two viable SSH libraries:
+- **Dropbear** — ~100 KB flash, MIT-like, battle-tested, ported to ESP32
+- **wolfSSH** — wolfSSL ecosystem, commercial support, GPLv3 or commercial
 
 ## Memory Budget (ESP32-S3, 8 MB PSRAM + 8 MB Flash)
 
@@ -390,22 +406,42 @@ ota <url>               Trigger firmware update
 |-------|-----------|
 | WiFi | WPA2/WPA3 (ESP-IDF native) |
 | MQTT | TLS 1.2+ with server cert verification |
-| SSH | Public key + password auth |
-| OTA | Signed firmware images |
+| Remote access | MQTT command channel (v1); SSH optional (v2+) |
+| OTA | Signed firmware images, dual-partition rollback |
 | Flash | Encrypted NVS for secrets |
-| Boot | Secure boot (optional, recommended for production) |
+| Boot | Secure boot (recommended for production) |
 | Scripts | Signed/authorized updates only in production mode |
-| JS sandbox | Bounded heap, execution timeout, no raw I/O access |
+| JS sandbox | See constraints below |
 
-## Medical Data Integrity
+### JS Runtime Constraints (enforced in C, not by convention)
 
-Every ASTM result that flows through the device must have:
+| Constraint | Limit | Enforcement |
+|------------|-------|-------------|
+| Max heap | 2 MB | Allocator hard cap |
+| Max execution time | 5 seconds per eval | Watchdog timer, forced abort |
+| Max script size | 64 KB | Rejected at upload |
+| Max message to JS | 4 KB | Truncated before dispatch |
+| API surface | Allowlist only | No raw I/O, no filesystem write, no network |
+| Script deployment | Signed in production | Unsigned only in dev mode |
+| Error isolation | JS crash does not crash system | Catch, log, continue |
+
+Note: this document describes a data acquisition gateway, not a
+regulated diagnostic device. The term "medical data" refers to lab
+results in transit, not diagnostic conclusions. Regulatory posture
+(FDA, CLIA) depends on the full system context and intended use.
+
+## Data Integrity
+
+Every ASTM result that flows through the device must carry:
 
 - **Device ID** — unique per gateway
 - **Analyzer ID** — from ASTM header record if available
 - **Session ID** — unique per ENQ→EOT session
+- **Event sequence number** — persistent monotonic counter, survives reboot
 - **Monotonic timestamp** — event ordering (boot-relative)
-- **Wall-clock timestamp** — from SNTP (marked if not yet synced)
+- **Wall-clock timestamp** — from SNTP
+- **Clock confidence** — `synced`, `unsynced`, `stale` (not just boolean)
+- **Boot reason** — power-on, watchdog, OTA, crash, user reboot
 - **Raw frame checksum** — ASTM checksum status (pass/fail)
 - **Parsed record** — structured patient/result data
 - **Publish timestamp** — when sent to MQTT
@@ -413,12 +449,67 @@ Every ASTM result that flows through the device must have:
 - **JS transform flag** — whether a script modified the data
 - **Firmware + script version** — at time of processing
 
-**Offline behavior:** If MQTT is unavailable, results are spooled to
-LittleFS with full metadata. Published in order when connectivity
-resumes, with original receive timestamps and unique IDs. Idempotent
-upstream processing prevents duplicates.
+### Fault taxonomy
+
+Every dropped, retried, malformed, or replayed event must be classified:
+
+| Fault | Description | Action |
+|-------|-------------|--------|
+| `frame_checksum_fail` | ASTM frame checksum mismatch | NAK + retry, log |
+| `frame_timeout` | Expected frame not received in time | Log, session reset |
+| `session_abort` | EOT without complete record set | Log partial, flag |
+| `parse_error` | Valid frame but unparseable content | Log raw frame |
+| `publish_failed` | MQTT publish not acknowledged | Spool for retry |
+| `publish_retry` | Re-publish from offline spool | Mark as replay |
+| `duplicate_suppressed` | Idempotent check caught duplicate | Log, do not publish |
+| `js_transform_error` | Script threw during transform | Publish untransformed + flag |
+| `js_timeout` | Script exceeded execution limit | Kill, publish raw |
+
+### Offline spool
+
+A **write-ahead segment spool** on LittleFS, separate from scripts
+and config, holds outbound MQTT publishes when the broker is
+unreachable:
+
+- Fixed-size segments (e.g. 4 KB) with CRC32 framing
+- Append-only within a segment; new segment on rollover
+- Configurable retention: max segments, max age, max total size
+- Explicit power-fail recovery: incomplete segment detected and
+  truncated to last valid record on boot
+- Published in order when connectivity resumes, with original
+  timestamps and event sequence numbers
+- Idempotent upstream processing prevents duplicates
+
+### Flash wear strategy
+
+LittleFS handles wear leveling internally, but the application must
+still constrain write patterns:
+
+- Audit log: segment rollover, bounded retention (e.g. 7 days or 1 MB)
+- Spool: bounded queue depth, oldest-first eviction if full
+- Config writes: NVS, infrequent (not per-event)
+- Worst-case assumption: 10 results/hour × 1 KB/result × 24h × 365d
+  = ~85 MB/year write volume. With 1.9 MB partition and retention
+  limits, flash endurance (100K erase cycles) is not a concern.
+
+### Boot record
+
+At every startup, write a boot record containing:
+- Event sequence number (first after reboot)
+- Reset cause (from ESP-IDF `esp_reset_reason()`)
+- Firmware version
+- Clock sync status
+- Free heap at boot
+- Previous shutdown reason if known
 
 ## Implementation Phases
+
+### v1 Core — ship this first
+
+The v1 target is a reliable data acquisition gateway: WiFi, MQTT/TLS,
+USB Host, ASTM parsing, audit logging, offline spool, OTA. The remote
+command surface is MQTT + serial REPL — no SSH in v1. Scripting is
+available but secondary to the transport path being rock-solid.
 
 ### Phase 0: Hardware Validation (1-2 weeks)
 **MUST DO FIRST — this is the go/no-go gate.**
@@ -438,44 +529,53 @@ upstream processing prevents duplicates.
 - [ ] MQTT over TLS with esp-mqtt
 - [ ] Topic dispatch (piccolo/js, piccolo/led, piccolo/cmd)
 - [ ] MQuickJS compiles and runs on ESP32-S3
-- [ ] JS REPL over serial (UART) for early testing
+- [ ] JS REPL over serial (UART) for development
 - [ ] LED control (on/off/toggle/blink)
 - [ ] NVS config storage
 - [ ] SNTP time sync
+- [ ] Persistent event counter (survives reboot)
+- [ ] Boot record logging (reset cause, version, clock status)
 
 ### Phase 2: Piccolo Integration (2-3 weeks)
 - [ ] USB Host FTDI driver (custom, based on ESP-IDF USB Host API)
 - [ ] ASTM framing state machine (ENQ/ACK/EOT)
 - [ ] ASTM record parser (header, patient, order, result records)
-- [ ] Result → MQTT publish pipeline
-- [ ] Audit logging to LittleFS
-- [ ] JS bindings for result data
+- [ ] Result → MQTT publish pipeline with full metadata
+- [ ] Audit logging to LittleFS (segment spool, CRC framing)
+- [ ] JS bindings for result data (post-parse transform)
+- [ ] Fault classification for every error path
 
-### Phase 3: SSH + REPL (2-3 weeks)
-- [ ] Dropbear or wolfSSH ported to ESP-IDF
-- [ ] SSH shell with readline
-- [ ] JS REPL over SSH
-- [ ] File commands (ls, cat, put, rm) on LittleFS
-- [ ] Script execution (run main.js)
-- [ ] SCP or SFTP for file transfer
-
-### Phase 4: Production Hardening (3-4 weeks)
-- [ ] OTA update with dual partitions + rollback
+### Phase 3: Production Hardening (3-4 weeks)
+- [ ] OTA update with dual partitions + rollback + health check
 - [ ] Secure boot + NVS encryption
 - [ ] Signed script updates
 - [ ] Watchdog coverage for all tasks
-- [ ] Memory profiling under sustained load
+- [ ] Memory profiling under sustained load (WiFi + USB + MQTT + JS)
 - [ ] USB disconnect/reconnect recovery
-- [ ] MQTT offline spool + replay
+- [ ] MQTT offline spool + ordered replay
+- [ ] Power-fail recovery: segment truncation, spool integrity check
+- [ ] Flash wear analysis under worst-case write patterns
 - [ ] Error reporting via MQTT status topic
-- [ ] 72-hour soak test (WiFi + USB + MQTT + JS)
+- [ ] 72-hour soak test
 
-### Phase 5: Field Deployment (2-3 weeks)
-- [ ] Device provisioning workflow (WiFi creds, broker config)
-- [ ] Fleet management (device ID, group config)
-- [ ] Remote monitoring dashboard
-- [ ] Alerting (device offline, analyzer disconnect, parse errors)
+### Phase 4: Field Deployment (2-3 weeks)
+- [ ] Device provisioning workflow (WiFi creds, broker config, device ID)
+- [ ] Fleet management (group config, remote script push)
+- [ ] Remote monitoring and alerting
 - [ ] Documentation for field installation
+
+### Phase 5: SSH Shell (optional, v2+)
+**Deferred.** SSH adds complexity, attack surface, RAM pressure, and
+field support burden. The v1 remote surface (MQTT command channel +
+serial REPL) is sufficient for development and operations. SSH is
+only justified if field operators need interactive shell access
+without physical serial connection.
+
+- [ ] Dropbear or wolfSSH ported to ESP-IDF
+- [ ] SSH shell with readline + JS REPL
+- [ ] File commands (ls, cat, put, rm) on LittleFS
+- [ ] SCP or SFTP for script upload
+- [ ] Per-device SSH key provisioning
 
 ## Total Effort Estimate
 
@@ -484,10 +584,10 @@ upstream processing prevents duplicates.
 | Phase 0: Hardware validation | 1-2 weeks | **HIGH** — go/no-go gate |
 | Phase 1: Core platform | 2-3 weeks | Low (ESP-IDF does most of it) |
 | Phase 2: Piccolo integration | 2-3 weeks | Medium (USB Host + ASTM) |
-| Phase 3: SSH + REPL | 2-3 weeks | Medium (SSH lib porting) |
-| Phase 4: Hardening | 3-4 weeks | Medium (edge cases, testing) |
-| Phase 5: Deployment | 2-3 weeks | Low (operational, not technical) |
-| **Total** | **12-18 weeks** | |
+| Phase 3: Hardening | 3-4 weeks | Medium (edge cases, soak testing) |
+| Phase 4: Deployment | 2-3 weeks | Low (operational, not technical) |
+| **v1 Total** | **10-15 weeks** | |
+| Phase 5: SSH (optional v2) | 2-3 weeks | Medium (SSH lib porting) |
 
 ## What Carries Over from Pico W
 
@@ -517,7 +617,7 @@ upstream processing prevents duplicates.
 | MQTT | Custom client | esp-mqtt (ESP-IDF) |
 | JS engine | MQuickJS | MQuickJS (same) |
 | USB Host | Custom (RP2040 peripheral) | ESP USB Host API |
-| Remote shell | Telnet (port 23, unencrypted) | **SSH (encrypted)** |
+| Remote shell | Telnet (port 23, unencrypted) | MQTT + serial REPL (v1); SSH optional (v2) |
 | OTA | Not implemented | ESP-IDF native |
 | Secure boot | Not implemented | ESP-IDF native |
 | Deep sleep | Not applicable | 14 uA available |

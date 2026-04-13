@@ -334,6 +334,7 @@ fn setBsscfgIovarU32(name: []const u8, iface: u32, value: u32) Error!void {
 pub fn joinWpa2(ssid: []const u8, passphrase: []const u8) Error!void {
     state = .joining;
     join_mod.join_state = .joining;
+    setIovarU32("mfp", 1) catch {};
     join_mod.joinWpa2(
         ssid,
         passphrase,
