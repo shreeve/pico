@@ -1,5 +1,5 @@
 const types = @import("../types.zig");
-const dhcp = @import("../../net/dhcp_client.zig");
+const dhcp = @import("../../net/dhcp.zig");
 const ioctl = @import("../control/ioctl.zig");
 
 pub fn service(

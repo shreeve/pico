@@ -25,10 +25,11 @@ const gpio_mod = @import("control/gpio.zig");
 const events_mod = @import("protocol/events.zig");
 const ethernet_mod = @import("netif/ethernet.zig");
 const service_mod = @import("netif/service.zig");
-const dhcp = @import("../net/dhcp_client.zig");
+const dhcp = @import("../net/dhcp.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
 const build_config = @import("build_config");
+const fmt = @import("../lib/fmt.zig");
 
 pub const State = types.State;
 pub const Error = types.Error;
@@ -58,42 +59,12 @@ const fw_blob = fw_combined[0..FW_LEN];
 const clm_blob = fw_combined[FW_PADDED..];
 const nvram_blob = @embedFile("firmware/43439A0_nvram.bin");
 
-// ── UART helpers (for boot-time diagnostics) ───────────────────────────
+// ── UART helpers (delegated to shared fmt module) ───────────────────────
 
-fn putc(ch: u8) void {
-    rp2040.uartWrite(rp2040.UART0_BASE, ch);
-}
-
-fn puts(s: []const u8) void {
-    for (s) |ch| {
-        if (ch == '\n') putc('\r');
-        putc(ch);
-    }
-}
-
-fn putHex32(val: u32) void {
-    const hex = "0123456789abcdef";
-    var buf: [10]u8 = undefined;
-    buf[0] = '0';
-    buf[1] = 'x';
-    inline for (0..8) |i| {
-        buf[2 + i] = hex[@as(usize, @intCast((val >> @as(u5, @intCast(28 - i * 4))) & 0xF))];
-    }
-    puts(&buf);
-}
-
-fn putDec(val: u32) void {
-    var buf: [10]u8 = undefined;
-    var n = val;
-    var i: usize = buf.len;
-    if (n == 0) { puts("0"); return; }
-    while (n > 0) {
-        i -= 1;
-        buf[i] = @intCast(n % 10 + '0');
-        n /= 10;
-    }
-    puts(buf[i..]);
-}
+const putc = fmt.putc;
+const puts = fmt.puts;
+const putHex32 = fmt.putHex32;
+const putDec = fmt.putDec;
 
 // ── Public API ─────────────────────────────────────────────────────────
 
@@ -246,21 +217,10 @@ fn bootctx() boot_mod.Context {
     };
 }
 
-fn readLE16(src: []const u8) u16 {
-    return ioctl_mod.readLE16(src);
-}
-
-fn readLE32(src: []const u8) u32 {
-    return ioctl_mod.readLE32(src);
-}
-
-fn writeLE16(dst: *[2]u8, val: u16) void {
-    ioctl_mod.writeLE16(dst, val);
-}
-
-fn writeLE32(dst: *[4]u8, val: u32) void {
-    ioctl_mod.writeLE32(dst, val);
-}
+const readLE16 = ioctl_mod.readLE16;
+const readLE32 = ioctl_mod.readLE32;
+const writeLE16 = ioctl_mod.writeLE16;
+const writeLE32 = ioctl_mod.writeLE32;
 
 fn pollDevice() PollResult {
     var ctx = ioctx();

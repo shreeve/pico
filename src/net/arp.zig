@@ -7,10 +7,13 @@
 // Reference: RFC 826 (ARP)
 
 const core = @import("../cyw43/device.zig");
-const dhcp = @import("dhcp_client.zig");
-const netif = @import("global_stack.zig");
+const netif = @import("stack.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
+
+fn localIp() [4]u8 {
+    return netif.stack().local_ip;
+}
 
 const CACHE_SIZE = 8;
 const ENTRY_TTL_MS: u64 = 300_000; // 5 minutes
@@ -36,19 +39,20 @@ pub fn resolve(ip: [4]u8) ?[6]u8 {
     for (&cache) |*entry| {
         if (entry.valid and ipEq(&entry.ip, &ip)) {
             if (now - entry.timestamp_ms < ENTRY_TTL_MS) {
-                netif.get().stats.arp_hits += 1;
+                netif.stack().stats.arp_hits += 1;
                 return entry.mac;
             }
             entry.valid = false;
         }
     }
-    netif.get().stats.arp_misses += 1;
+    netif.stack().stats.arp_misses += 1;
     sendRequest(ip);
     return null;
 }
 
 pub fn sendGratuitous() void {
-    if (dhcp.ip_addr[0] == 0 and dhcp.ip_addr[1] == 0) return;
+    const lip = localIp();
+    if (lip[0] == 0 and lip[1] == 0) return;
 
     var frame: [42]u8 = undefined;
     @memset(frame[0..6], 0xFF);
@@ -56,14 +60,14 @@ pub fn sendGratuitous() void {
     frame[12] = 0x08;
     frame[13] = 0x06;
 
-    buildArpPayload(&frame, 1, &core.mac_addr, &dhcp.ip_addr, &[_]u8{0} ** 6, &dhcp.ip_addr);
+    buildArpPayload(&frame, 1, &core.mac_addr, &lip, &[_]u8{0} ** 6, &lip);
     core.sendEthernet(&frame) catch {};
 }
 
 // ── Inbound handling ─────────────────────────────────────────────────
 
 pub fn handlePacket(eth_frame: []const u8) void {
-    netif.get().stats.arp_rx += 1;
+    netif.stack().stats.arp_rx += 1;
     if (eth_frame.len < 42) return;
 
     const a = eth_frame[14..];
@@ -83,8 +87,9 @@ pub fn handlePacket(eth_frame: []const u8) void {
 
     if (operation == 1) {
         const target_ip = a[24..28];
-        if (dhcp.ip_addr[0] == 0 and dhcp.ip_addr[1] == 0) return;
-        if (!ipEq(target_ip, &dhcp.ip_addr)) return;
+        const lip = localIp();
+        if (lip[0] == 0 and lip[1] == 0) return;
+        if (!ipEq(target_ip, &lip)) return;
 
         var reply: [42]u8 = undefined;
         @memcpy(reply[0..6], sender_mac);
@@ -92,7 +97,7 @@ pub fn handlePacket(eth_frame: []const u8) void {
         reply[12] = 0x08;
         reply[13] = 0x06;
 
-        buildArpPayload(&reply, 2, &core.mac_addr, &dhcp.ip_addr, sender_mac, sender_ip);
+        buildArpPayload(&reply, 2, &core.mac_addr, &lip, sender_mac, sender_ip);
         core.sendEthernet(&reply) catch {};
     }
 }
@@ -100,7 +105,8 @@ pub fn handlePacket(eth_frame: []const u8) void {
 // ── Outbound ARP request ─────────────────────────────────────────────
 
 fn sendRequest(target_ip: [4]u8) void {
-    if (dhcp.ip_addr[0] == 0 and dhcp.ip_addr[1] == 0) return;
+    const lip = localIp();
+    if (lip[0] == 0 and lip[1] == 0) return;
 
     var frame: [42]u8 = undefined;
     @memset(frame[0..6], 0xFF);
@@ -108,7 +114,7 @@ fn sendRequest(target_ip: [4]u8) void {
     frame[12] = 0x08;
     frame[13] = 0x06;
 
-    buildArpPayload(&frame, 1, &core.mac_addr, &dhcp.ip_addr, &[_]u8{0} ** 6, &target_ip);
+    buildArpPayload(&frame, 1, &core.mac_addr, &lip, &[_]u8{0} ** 6, &target_ip);
     core.sendEthernet(&frame) catch {};
 }
 

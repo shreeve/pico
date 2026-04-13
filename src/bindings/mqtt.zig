@@ -11,7 +11,7 @@
 
 const c = @import("../js/quickjs_api.zig");
 const console = @import("console.zig");
-const netif = @import("../net/global_stack.zig");
+const netif = @import("../net/stack.zig");
 const stack_mod = @import("../net/tcpip.zig");
 const hal = @import("../platform/hal.zig");
 
@@ -52,7 +52,7 @@ fn onOpen(_: *anyopaque, _: stack_mod.ConnId) void {
     console.puts("[mqtt] TCP connected, sending CONNECT\n");
     pending = .connect_pkt;
     pending_token = 1;
-    netif.get().tcpMarkSendReady(conn_id);
+    netif.stack().tcpMarkSendReady(conn_id);
 }
 
 fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
@@ -137,7 +137,7 @@ pub fn connectBroker(ip: [4]u8, port: u16, client_id: []const u8) bool {
     client_id_len = id_len;
     state = .connecting;
 
-    const id = netif.get().tcpConnect(ip, port, vtable) orelse {
+    const id = netif.stack().tcpConnect(ip, port, vtable) orelse {
         console.puts("[mqtt] TCP connect failed\n");
         state = .error_state;
         return false;
@@ -160,7 +160,7 @@ pub fn publish(topic: []const u8, payload: []const u8) bool {
 
     pending = .publish_pkt;
     pending_token += 1;
-    netif.get().tcpMarkSendReady(conn_id);
+    netif.stack().tcpMarkSendReady(conn_id);
     return true;
 }
 
@@ -174,7 +174,7 @@ pub fn subscribe(topic: []const u8) bool {
 
     pending = .subscribe_pkt;
     pending_token += 1;
-    netif.get().tcpMarkSendReady(conn_id);
+    netif.stack().tcpMarkSendReady(conn_id);
     return true;
 }
 
@@ -182,7 +182,7 @@ pub fn disconnect() void {
     if (state == .connected) {
         pending = .disconnect_pkt;
         pending_token += 1;
-        netif.get().tcpMarkSendReady(conn_id);
+        netif.stack().tcpMarkSendReady(conn_id);
     }
     state = .disconnected;
 }
@@ -195,7 +195,7 @@ pub fn poll() void {
         if (pending == .none) {
             pending = .ping_pkt;
             pending_token += 1;
-            netif.get().tcpMarkSendReady(conn_id);
+            netif.stack().tcpMarkSendReady(conn_id);
             last_ping_ms = now;
         }
     }

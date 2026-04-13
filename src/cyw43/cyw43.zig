@@ -11,10 +11,11 @@ pub const bus = @import("transport/bus.zig");
 pub const pio_spi = @import("transport/pio_spi.zig");
 pub const regs = @import("regs.zig");
 pub const device = @import("device.zig");
-pub const dhcp = @import("../net/dhcp_client.zig");
+pub const dhcp = @import("../net/dhcp.zig");
 pub const arp = @import("../net/arp.zig");
 pub const ipv4 = @import("../net/ipv4.zig");
 pub const icmp = @import("../net/icmp.zig");
+const netif = @import("../net/stack.zig");
 
 pub const State = types.State;
 pub const Error = types.Error;
@@ -60,7 +61,7 @@ pub fn service() void {
 }
 
 pub fn getIpAddress() [4]u8 {
-    return dhcp.ip_addr;
+    return netif.stack().local_ip;
 }
 
 pub fn hasIpAddress() bool {

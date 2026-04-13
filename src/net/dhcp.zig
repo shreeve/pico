@@ -9,6 +9,9 @@ const core = @import("../cyw43/device.zig");
 const regs = @import("../cyw43/regs.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
+const fmt = @import("../lib/fmt.zig");
+const byteutil = @import("../lib/byteutil.zig");
+const netif = @import("stack.zig");
 
 pub const DhcpState = enum {
     idle,
@@ -30,37 +33,9 @@ var xid: u32 = 0x52495021; // "RIP!" base, incremented per transaction
 var lease_start_ms: u64 = 0;
 var renew_sent: bool = false;
 
-// ── UART helpers (TODO: deduplicate with core.zig into shared module) ─
-
-fn puts(s: []const u8) void {
-    for (s) |ch| {
-        if (ch == '\n') rp2040.uartWrite(rp2040.UART0_BASE, '\r');
-        rp2040.uartWrite(rp2040.UART0_BASE, ch);
-    }
-}
-
-fn putDec(val: u32) void {
-    var buf: [10]u8 = undefined;
-    var n = val;
-    var i: usize = buf.len;
-    if (n == 0) {
-        puts("0");
-        return;
-    }
-    while (n > 0) {
-        i -= 1;
-        buf[i] = @intCast(n % 10 + '0');
-        n /= 10;
-    }
-    puts(buf[i..]);
-}
-
-pub fn putIp(addr: [4]u8) void {
-    for (addr, 0..) |b, i| {
-        if (i > 0) puts(".");
-        putDec(b);
-    }
-}
+const puts = fmt.puts;
+const putDec = fmt.putDec;
+pub const putIp = fmt.putIp;
 
 // ── Public API ────────────────────────────────────────────────────────
 
@@ -199,6 +174,7 @@ fn handleDhcp(bootp: []const u8) void {
         dhcp_state = .bound;
         lease_start_ms = hal.millis();
         renew_sent = false;
+        netif.stack().setIpv4(ip_addr, subnet_mask, gateway);
         puts("[dhcp] bound ");
         putIp(ip_addr);
         puts(" gw ");
@@ -424,29 +400,6 @@ fn buildEthIpUdp(buf: *[600]u8, dhcp_len: usize) usize {
     return frame_len;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
-
-fn readBE32(p: []const u8) u32 {
-    return (@as(u32, p[0]) << 24) | (@as(u32, p[1]) << 16) | (@as(u32, p[2]) << 8) | p[3];
-}
-
-fn writeBE32(p: []u8, val: u32) void {
-    p[0] = @intCast((val >> 24) & 0xFF);
-    p[1] = @intCast((val >> 16) & 0xFF);
-    p[2] = @intCast((val >> 8) & 0xFF);
-    p[3] = @intCast(val & 0xFF);
-}
-
-fn ipChecksum(hdr: []const u8) u16 {
-    var sum: u32 = 0;
-    var i: usize = 0;
-    while (i + 1 < hdr.len) : (i += 2) {
-        sum += (@as(u32, hdr[i]) << 8) | hdr[i + 1];
-    }
-    if (i < hdr.len) sum += @as(u32, hdr[i]) << 8;
-    // Fold carries
-    while (sum > 0xFFFF) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    return @intCast(~sum & 0xFFFF);
-}
+const readBE32 = byteutil.readBE32;
+const writeBE32 = byteutil.writeBE32;
+const ipChecksum = byteutil.ipChecksum;

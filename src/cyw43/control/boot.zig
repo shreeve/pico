@@ -3,8 +3,10 @@ const bus = @import("../transport/bus.zig");
 const regs = @import("../regs.zig");
 const types = @import("../types.zig");
 const ioctl = @import("ioctl.zig");
-const dhcp = @import("../../net/dhcp_client.zig");
+const dhcp = @import("../../net/dhcp.zig");
 const hal = @import("../../platform/hal.zig");
+const fmt = @import("../../lib/fmt.zig");
+const netif = @import("../../net/stack.zig");
 
 pub const Context = struct {
     state: *types.State,
@@ -290,7 +292,7 @@ pub fn boot(ctx: *Context) types.Error!void {
 
         if (dhcp.dhcp_state == .bound) {
             ctx.puts("[wifi] IP=");
-            dhcp.putIp(dhcp.ip_addr);
+            fmt.putIp(netif.stack().local_ip);
             ctx.puts("\n");
         } else {
             ctx.puts("[dhcp] failed to obtain IP\n");

@@ -7,7 +7,7 @@
 
 const console = @import("../bindings/console.zig");
 const engine = @import("../js/runtime.zig");
-const netif = @import("global_stack.zig");
+const netif = @import("stack.zig");
 const stack_mod = @import("tcpip.zig");
 
 pub const LISTEN_PORT: u16 = 9001;
@@ -76,7 +76,7 @@ pub fn init() void {
     active_conn = null;
     reply_len = 0;
 
-    if (!netif.get().tcpListen(LISTEN_PORT, vtable)) {
+    if (!netif.stack().tcpListen(LISTEN_PORT, vtable)) {
         console.puts("[proto] failed to register listener\n");
     }
 }
@@ -89,7 +89,7 @@ fn sendReply(msg: []const u8) void {
     reply_len = n;
     reply_token += 1;
     if (active_conn) |id| {
-        netif.get().tcpMarkSendReady(id);
+        netif.stack().tcpMarkSendReady(id);
     }
 }
 

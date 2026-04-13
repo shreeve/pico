@@ -6,18 +6,23 @@
 //
 // Reference: RFC 791 (IPv4)
 
-const dhcp = @import("dhcp_client.zig");
+const dhcp = @import("dhcp.zig");
 const arp_mod = @import("arp.zig");
 const icmp = @import("icmp.zig");
-const netif = @import("global_stack.zig");
+const netif = @import("stack.zig");
 const core = @import("../cyw43/device.zig");
+const byteutil = @import("../lib/byteutil.zig");
+
+fn getStack() *netif.Stack {
+    return netif.stack();
+}
 
 pub const PROTO_ICMP: u8 = 1;
 pub const PROTO_TCP: u8 = 6;
 pub const PROTO_UDP: u8 = 17;
 
 pub fn handlePacket(ip_data: []const u8) void {
-    const s = netif.get();
+    const s = netif.stack();
     s.stats.ip_rx += 1;
 
     if (ip_data.len < 20) return;
@@ -73,14 +78,14 @@ pub fn handlePacket(ip_data: []const u8) void {
 fn isForUs(dst: []const u8) bool {
     if (dst[0] == 255 and dst[1] == 255 and dst[2] == 255 and dst[3] == 255) return true;
 
-    if (dhcp.ip_addr[0] == 0 and dhcp.ip_addr[1] == 0 and
-        dhcp.ip_addr[2] == 0 and dhcp.ip_addr[3] == 0) return true;
+    const lip = getStack().local_ip;
+    if (lip[0] == 0 and lip[1] == 0 and lip[2] == 0 and lip[3] == 0) return true;
 
-    if (dst[0] == dhcp.ip_addr[0] and dst[1] == dhcp.ip_addr[1] and
-        dst[2] == dhcp.ip_addr[2] and dst[3] == dhcp.ip_addr[3]) return true;
+    if (dst[0] == lip[0] and dst[1] == lip[1] and
+        dst[2] == lip[2] and dst[3] == lip[3]) return true;
 
-    const local = ipToU32(&dhcp.ip_addr);
-    const mask = ipToU32(&dhcp.subnet_mask);
+    const local = ipToU32(&lip);
+    const mask = ipToU32(&getStack().subnet_mask);
     const d = ipToU32(dst[0..4]);
     if (d == ((local & mask) | ~mask)) return true;
 
@@ -120,7 +125,7 @@ pub fn sendPacket(dst_ip: [4]u8, protocol: u8, payload: []const u8) !void {
     ip[9] = protocol;
     ip[10] = 0;
     ip[11] = 0;
-    @memcpy(ip[12..16], &dhcp.ip_addr);
+    @memcpy(ip[12..16], &getStack().local_ip);
     @memcpy(ip[16..20], &dst_ip);
 
     const cksum = ipChecksum(ip[0..20]);
@@ -133,34 +138,24 @@ pub fn sendPacket(dst_ip: [4]u8, protocol: u8, payload: []const u8) !void {
 }
 
 fn resolveNextHop(dst: [4]u8) ?[4]u8 {
-    const local = ipToU32(&dhcp.ip_addr);
-    const mask = ipToU32(&dhcp.subnet_mask);
+    const lip = getStack().local_ip;
+    const local = ipToU32(&lip);
+    const mask = ipToU32(&getStack().subnet_mask);
     const d = ipToU32(&dst);
 
     if (local == 0) return null;
 
     if ((d & mask) == (local & mask)) return dst;
 
-    if (dhcp.gateway[0] == 0 and dhcp.gateway[1] == 0 and
-        dhcp.gateway[2] == 0 and dhcp.gateway[3] == 0) return null;
+    const gw = getStack().gateway_ip;
+    if (gw[0] == 0 and gw[1] == 0 and gw[2] == 0 and gw[3] == 0) return null;
 
-    return dhcp.gateway;
+    return gw;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-pub fn ipChecksum(hdr: []const u8) u16 {
-    var sum: u32 = 0;
-    var i: usize = 0;
-    while (i + 1 < hdr.len) : (i += 2) {
-        sum += (@as(u32, hdr[i]) << 8) | hdr[i + 1];
-    }
-    if (i < hdr.len) sum += @as(u32, hdr[i]) << 8;
-    while (sum > 0xFFFF) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    return @intCast(~sum & 0xFFFF);
-}
+pub const ipChecksum = byteutil.ipChecksum;
 
 fn ipToU32(ip: *const [4]u8) u32 {
     return (@as(u32, ip[0]) << 24) | (@as(u32, ip[1]) << 16) | (@as(u32, ip[2]) << 8) | ip[3];

@@ -309,17 +309,22 @@ pub fn build(b: *std.Build) void {
     const test_main_step = b.step("test-main", "Build MQuickJS bring-up test (staged, with JS VM)");
     test_main_step.dependOn(&test_main_install.step);
 
-    // ── Unit tests ──────────────────────────────────────────────────────
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+    // ── Network stack unit tests (host-side, pure logic) ────────────────
+    const test_net_module = b.createModule(.{
+        .root_source_file = b.path("tests/test_net.zig"),
         .target = host_target,
         .optimize = optimize,
     });
-    const unit_tests = b.addTest(.{
-        .name = "pico-tests",
-        .root_module = test_module,
+    test_net_module.addImport("byteutil", b.createModule(.{
+        .root_source_file = b.path("src/lib/byteutil.zig"),
+        .target = host_target,
+        .optimize = optimize,
+    }));
+    const test_net = b.addTest(.{
+        .name = "test-net",
+        .root_module = test_net_module,
     });
-    const run_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    const run_test_net = b.addRunArtifact(test_net);
+    const test_step = b.step("test", "Run host-side unit tests");
+    test_step.dependOn(&run_test_net.step);
 }

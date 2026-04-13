@@ -8,7 +8,12 @@
 //   5. Init MQuickJS VM
 //   6. Init services (wifi, storage, etc.)
 //   7. Load script from flash (if present)
-//   8. Start event loop
+//   8. Enter cooperative main loop
+//
+// Main loop scheduling:
+//   Single-core, non-preemptive. Each subsystem is polled explicitly
+//   in a fixed order. All poll functions must be short and non-blocking.
+//   The event loop handles timers and deferred callbacks only.
 
 comptime {
     _ = @import("platform/startup.zig");
@@ -17,9 +22,10 @@ comptime {
 const build_config = @import("build_config");
 const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
+const fmt = @import("lib/fmt.zig");
 const memory = @import("runtime/memory_pool.zig");
 const event_loop = @import("runtime/event_loop.zig");
-const netif = @import("net/global_stack.zig");
+const netif = @import("net/stack.zig");
 const watchdog = @import("runtime/watchdog.zig");
 const engine = @import("js/runtime.zig");
 const console = @import("bindings/console.zig");
@@ -51,47 +57,15 @@ const BANNER =
     \\
 ;
 
-fn putc(ch: u8) void {
-    rp2040.uartWrite(rp2040.UART0_BASE, ch);
-}
-
-fn puts(s: []const u8) void {
-    for (s) |ch| {
-        if (ch == '\n') putc('\r');
-        putc(ch);
-    }
-}
+const putc = fmt.putc;
+const puts = fmt.puts;
 
 fn printU32(val: u32) void {
-    var buf: [10]u8 = undefined;
-    var n = val;
-    var i: usize = buf.len;
-    if (n == 0) {
-        putc('0');
-        return;
-    }
-    while (n > 0) {
-        i -= 1;
-        buf[i] = @intCast(n % 10 + '0');
-        n /= 10;
-    }
-    puts(buf[i..]);
+    fmt.putUnsigned(u32, val);
 }
 
 fn printU64(val: u64) void {
-    var buf: [20]u8 = undefined;
-    var n = val;
-    var i: usize = buf.len;
-    if (n == 0) {
-        putc('0');
-        return;
-    }
-    while (n > 0) {
-        i -= 1;
-        buf[i] = @intCast(n % 10 + '0');
-        n /= 10;
-    }
-    puts(buf[i..]);
+    fmt.putUnsigned(u64, val);
 }
 
 pub fn main() noreturn {
@@ -191,7 +165,7 @@ pub fn main() noreturn {
         pollUartCmd();
         wifi.poll();
         mqtt.poll();
-        netif.tick();
+        netif.tick(@truncate(hal.millis()));
         watchdog.feed();
 
         const now = hal.millis();
