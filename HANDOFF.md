@@ -226,20 +226,35 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 
 ## What Is Next
 
-### Immediate (validate the proven stack)
+### Achieved (this session)
 
-1. **Test TCP handshake on hardware** — connect to a server or accept a
-   connection. This is the critical next step; the stack is hardened but
-   unvalidated. Capture packets with Wireshark to verify checksums, MSS,
-   sequence numbers, and state transitions.
+1. **TCP validated on hardware** — telnet shell on port 23 proves full TCP
+   lifecycle: SYN handshake, bidirectional data, MSS negotiation, clean
+   teardown. 72 segments received, 31 sent, 0 retransmissions.
 
-2. **Test MQTT end-to-end** with a Mosquitto broker on the LAN.
+2. **Telnet shell working** — interactive remote console over WiFi with
+   commands: help, stats, ip, uptime, mem, eval, led, reboot, quit.
+
+3. **JavaScript eval over WiFi** — `eval 2 + 2` returns `4` over TCP.
+   MQuickJS executes JS expressions from telnet and returns results.
+
+### Immediate next
+
+4. **Integrate BearSSL for TLS 1.2** — required for medical compliance.
+   Vendor BearSSL C sources in `ext/bearssl/`, compile like MQuickJS
+   (freestanding C, no malloc). Wrap in `src/tls/bearssl.zig`. Enable
+   MQTT over TLS (port 8883) and secure telnet shell (or SSH-lite).
+   BearSSL needs ~25KB RAM per session, ~20KB flash. Fits in RP2040
+   budget if JS VM heap is reduced to 64KB.
+
+5. **Test MQTT end-to-end** with a Mosquitto broker on the LAN.
+   The client code exists (`bindings/mqtt.zig`); TCP is now proven.
 
 ### Near-term
 
-3. **Integrate BearSSL** for TLS (MQTT over port 8883, HTTPS for OTA)
-4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
-5. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
+6. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
+7. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
+8. **Peripheral bindings** (ADC, PWM, I2C, SPI) to enable real hardware JS projects
 
 ### Polish / consistency
 
