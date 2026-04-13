@@ -5,9 +5,9 @@
 Read these files in order:
 1. **This file** — priorities, workflow, tools
 2. **HANDOFF.md** — current state, source tree, what's proven, what's next
-3. **NETWORKING.md** — networking stack status and architecture
-4. **CYW43.md** — low-level CYW43 bring-up and protocol findings
-5. **ZIG-0.15.2.md** — Zig language reference (API changes from older versions)
+3. **docs/NETWORKING.md** — networking stack status and architecture
+4. **docs/CYW43.md** — low-level CYW43 bring-up and protocol findings
+5. **docs/ZIG-0.15.2.md** — Zig language reference (API changes from older versions)
 
 ## What We're Building
 
@@ -128,7 +128,7 @@ These are real bugs we hit and fixed. Do NOT reintroduce them:
 - `@setCold` removed, `usingnamespace` removed, `opaque` is a keyword
 - `@import("root")` refers to the build system's root source file — used by startup.zig
 - For freestanding ARM: no libc, no stack unwinding, `@memset`/`@memcpy` are compiler builtins
-- See `ZIG-0.15.2.md` for the comprehensive reference
+- See `docs/ZIG-0.15.2.md` for the comprehensive reference
 
 ## Code Style
 

@@ -3,11 +3,11 @@
 This document captures the full context so a new AI or developer can pick
 up exactly where we left off.
 
-## Current State (April 10, 2026)
+## Current State (April 12, 2026)
 
 ### Branch: `main` — proven on hardware
 
-Everything is on `main`. No feature branches. Clean working tree.
+Everything is on `main`. No feature branches.
 
 **Validated on real Pico W hardware:**
 - CYW43 WiFi: PIO SPI → firmware upload → scan → WPA2-PSK join → DHCP
@@ -20,12 +20,37 @@ Everything is on `main`. No feature branches. Clean working tree.
 - Watchdog (8s) with crash counter and safe-mode detection
 - 10ms periodic timer interrupt enabling `wfe` idle
 
-**Not yet validated:**
-- TCP handshake (stack is written, not tested on hardware)
+**Not yet validated on hardware:**
+- TCP handshake (stack is written and hardened, not tested on hardware)
 - MQTT broker connection
 - Script push over TCP port 9001
 - OTA firmware update
 - Flash KV write (read works via XIP, write needs RAM flash driver)
+
+### Recent Changes (this session)
+
+Major refactoring and hardening pass across the network stack:
+
+1. **Shared helpers** — `lib/byteutil.zig` (BE byte-order, checksum, ipv4Eq)
+   and `lib/fmt.zig` (UART debug output) centralize duplicated code from 5 files
+2. **Stack-owned IPv4 config** — `NetStack` holds `local_ip`/`subnet_mask`/
+   `gateway_ip`; DHCP publishes via `setIpv4()` on lease acquisition; ARP,
+   IPv4, TCP all read from stack, not DHCP globals
+3. **TCP checksum decoupled** — `tcpChecksum()`/`tcpChecksumValid()` take
+   explicit src/dst IP parameters; no cross-layer DHCP dependency
+4. **TIME-WAIT is time-based** — configurable `tcp_timewait_ms` (default 30s),
+   driven by wall-clock `elapsed_ms`, clamped to avoid timer drain on stalls
+5. **Retransmission timers are ms-based** — `rto_ms` (initial 250ms, max 5s
+   with exponential backoff), `retx_deadline_ms` compared via wrapping
+   subtraction against `last_tick_ms`
+6. **ISN hardened** — 4-tuple + boot-secret + monotonic counter + lowbias32 mixer
+7. **MSS option** — SYN/SYN-ACK include 4-byte MSS option advertising 1460
+8. **ARP-pending deferred retry** — `emitSegment()` returns `EmitResult`;
+   `retryArpPending()` with per-connection cooldown prevents first-segment loss
+9. **Event loop simplified** — timers and deferred callbacks only; device
+   polling is explicit in main loop; documented cooperative scheduling contract
+10. **34 host-side unit tests** — sequence arithmetic, checksums, byte-order,
+    MSS encoding, mix32 avalanche; run with `zig build test`
 
 ### Architecture
 
@@ -56,8 +81,10 @@ Everything is on `main`. No feature branches. Clean working tree.
 
 ```
 src/
-├── main.zig                  Entry point + boot flow
-├── test_support.zig          Test harness re-exports
+├── main.zig                  Entry point + cooperative main loop
+├── lib/                      Shared pure helpers
+│   ├── fmt.zig               Debug output (putc, puts, putDec, putHex32, putIp)
+│   └── byteutil.zig          BE byte-order, checksum, ipv4Eq
 ├── bindings/                 JS API bindings
 │   ├── console.zig           UART + console.log
 │   ├── gpio.zig              GPIO JS bindings
@@ -71,11 +98,11 @@ src/
 │   └── i2c.zig               I2C stub
 ├── net/                      Network stack
 │   ├── tcpip.zig             Comptime NetStack(Config) — TCP state machine
-│   ├── global_stack.zig      Singleton stack instance bridge
+│   ├── stack.zig             Singleton stack instance (owns IPv4 config)
 │   ├── ipv4.zig              IPv4 parse/route/send + stats
 │   ├── icmp.zig              Echo reply (ping)
 │   ├── arp.zig               ARP responder + 8-entry client cache
-│   ├── dhcp_client.zig       DHCP client with lease renewal
+│   ├── dhcp.zig              DHCP client with lease renewal
 │   └── script_push.zig       Script push protocol (TCP port 9001)
 ├── cyw43/                    CYW43439 WiFi driver
 │   ├── cyw43.zig             Public API module
@@ -95,7 +122,7 @@ src/
 │   ├── startup.zig           Vector table + BSS/data init
 │   └── *.ld                  Linker scripts
 ├── runtime/                  Core runtime
-│   ├── event_loop.zig        Cooperative event loop
+│   ├── event_loop.zig        Timers + deferred callbacks (not device polling)
 │   ├── scheduler.zig         Task queue
 │   ├── timer.zig             Software timers
 │   ├── memory_pool.zig       Fixed memory pool
@@ -117,6 +144,12 @@ src/
 ├── provisioning/
 │   └── captive_portal.zig    WiFi AP-mode provisioning (stub)
 └── libc/                     Freestanding C stubs
+
+tests/
+├── test_net.zig              Host-side: sequence arithmetic, checksums, MSS, mix32
+├── test_uart.zig             Hardware: minimal UART (SWD)
+├── test_hal.zig              Hardware: HAL + PLL @ 125 MHz
+└── test_main.zig             Hardware: MQuickJS VM bring-up
 ```
 
 ### TCP/IP Stack Design (uIP-inspired)
@@ -134,7 +167,17 @@ Key design principles:
 - **Multi-connection**: fixed array of N connections (default 4) + listener table.
 - **Work flags**: per-connection `ack_due`, `tx_ready`, `retx_due`, `close_due`
   processed deterministically in `tcpPollOutput()`.
-- **19 observability counters**: ip_rx, ip_bad_checksum, arp_hits/misses, tcp_retx, etc.
+- **Fixed receive window**: comptime `rcv_wnd` (default 2048); no per-connection
+  receive buffer — app consumes data via `on_recv` callback.
+- **MSS advertisement**: SYN/SYN-ACK include 4-byte MSS option (1460 for Ethernet).
+- **Time-based timers**: all TCP timers (retransmit RTO, TIME-WAIT) use
+  wall-clock milliseconds via `last_tick_ms`. RTO starts at 250ms, doubles to 5s max.
+- **21 observability counters**: ip_rx, ip_bad_checksum, arp_hits/misses,
+  tcp_retx, tcp_bad_checksum, tcp_rst_tx, etc.
+- **RX checksum verification**: incoming TCP segments validated before processing.
+- **RST generation**: unmatched segments receive RST per RFC 793.
+- **Stack-owned IPv4 config**: `local_ip`/`subnet_mask`/`gateway_ip` live in the
+  stack instance, set by DHCP (or future static config).
 - **Zero dynamic allocation**: all buffers are static, compile-time sized.
 
 ### Flash Layout (RP2040, 2 MB)
@@ -168,15 +211,10 @@ picotool load -v -x zig-out/firmware/pico.uf2
 
 # Serial console
 picocom -b 115200 --noreset /dev/cu.usbserial-0001
+
+# Run host-side unit tests
+zig build test
 ```
-
-### Hardware Setup
-
-Two USB cables to Mac:
-1. **CP2102** (USB-to-serial) → Pico W GP0/GP1 (UART TX/RX/GND)
-2. **USB-C** → Pico W (power + UF2 flashing)
-
-Optional: Raspberry Pi Debug Probe for SWD (not needed for normal dev).
 
 ### Flash Workflow
 
@@ -188,12 +226,32 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 
 ## What Is Next
 
-1. **Test TCP handshake** on hardware — connect to a server or accept connection
-2. **Test MQTT** end-to-end with Mosquitto broker
+### Immediate (validate the proven stack)
+
+1. **Test TCP handshake on hardware** — connect to a server or accept a
+   connection. This is the critical next step; the stack is hardened but
+   unvalidated. Capture packets with Wireshark to verify checksums, MSS,
+   sequence numbers, and state transitions.
+
+2. **Test MQTT end-to-end** with a Mosquitto broker on the LAN.
+
+### Near-term
+
 3. **Integrate BearSSL** for TLS (MQTT over port 8883, HTTPS for OTA)
 4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
 5. **Build OTA bootloader** (immutable, SHA-256 verification, staged update)
-6. **Production security**: signed updates, authenticated script upload, JS sandboxing
+
+### Deferred (acceptable for current use)
+
+6. **No TCP zero-window probes / persist timer.** If peer advertises zero
+   window and later reopens, connection can stall. Not needed for short
+   MQTT exchanges but required for long-lived connections.
+
+7. **No simultaneous open support.** SYN without ACK in `syn_sent` is
+   ignored. Extremely rare in practice, can be deferred indefinitely.
+
+8. **Production security**: signed updates, authenticated script upload,
+   JS sandboxing. Required before internet-facing deployment.
 
 ## Piccolo Xpress Details
 
@@ -207,7 +265,8 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 ## Key Documentation
 
 - `AGENTS.md` — AI agent instructions and RP2040 gotchas
-- `NETWORKING.md` — WiFi/networking status and architecture
-- `CYW43.md` — CYW43 bring-up reference
+- `docs/NETWORKING.md` — WiFi/networking status and architecture
+- `docs/CYW43.md` — CYW43 bring-up reference
+- `ISSUES.md` — Current issue tracker (resolved + open)
 - `PICO.md` — Host-side CLI tool vision
-- `ZIG-0.15.2.md` — Zig language reference
+- `docs/ZIG-0.15.2.md` — Zig language reference

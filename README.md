@@ -123,11 +123,11 @@ pico/
 │   │   └── i2c.zig        I2C peripheral
 │   ├── net/               Network stack
 │   │   ├── tcpip.zig      Comptime NetStack(Config) — TCP state machine
-│   │   ├── global_stack.zig Singleton stack instance
+│   │   ├── stack.zig      Singleton stack instance (owns IPv4 config)
 │   │   ├── ipv4.zig       IPv4 parse/route/send
 │   │   ├── icmp.zig       Echo reply (ping)
 │   │   ├── arp.zig        ARP responder + client cache
-│   │   ├── dhcp_client.zig DHCP client
+│   │   ├── dhcp.zig       DHCP client
 │   │   └── script_push.zig Script push protocol (port 9001)
 │   ├── cyw43/             CYW43439 WiFi driver
 │   │   ├── cyw43.zig      Public API module
