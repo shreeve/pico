@@ -1,10 +1,12 @@
 // MQTT 3.1.1 client — app-driven TCP via NetStack.
 //
-// Implements AppVTable to interact with the TCP stack directly:
-// - produce_tx regenerates the current outbound packet on retransmit
-// - on_recv parses CONNACK, PUBLISH, SUBACK, PINGRESP
-// - on_open sends the CONNECT packet
-// - on_closed schedules reconnect
+// Supports two transport modes:
+//   1. Plaintext TCP (port 1883) — uses AppVTable.produce_tx for retransmit
+//   2. TLS 1.2 (port 8883) — sends through TLS session eagerly; TLS layer
+//      handles its own ciphertext retention for TCP retransmit
+//
+// In both modes, on_recv parses CONNACK/PUBLISH/SUBACK/PINGRESP and
+// on_open triggers the MQTT CONNECT handshake.
 //
 // Single broker connection, QoS 0 only.
 // Reference: MQTT v3.1.1 (OASIS Standard)
@@ -14,6 +16,8 @@ const console = @import("console.zig");
 const netif = @import("../net/stack.zig");
 const stack_mod = @import("../net/tcpip.zig");
 const hal = @import("../platform/hal.zig");
+const tls_mod = @import("../tls/tls.zig");
+const ssl = @import("../tls/bearssl.zig");
 
 pub const MqttState = enum { disconnected, connecting, connected, error_state };
 
@@ -21,6 +25,7 @@ var state: MqttState = .disconnected;
 var conn_id: stack_mod.ConnId = 0;
 var keepalive_s: u16 = 60;
 var last_ping_ms: u64 = 0;
+var tls_mode: bool = false;
 
 const PACKET_CONNECT: u8 = 0x10;
 const PACKET_CONNACK: u8 = 0x20;
@@ -49,10 +54,19 @@ var sub_topic_len: usize = 0;
 // ── AppVTable callbacks ──────────────────────────────────────────────
 
 fn onOpen(_: *anyopaque, _: stack_mod.ConnId) void {
-    console.puts("[mqtt] TCP connected, sending CONNECT\n");
-    pending = .connect_pkt;
-    pending_token = 1;
-    netif.stack().tcpMarkSendReady(conn_id);
+    if (tls_mode) {
+        console.puts("[mqtt] TLS connected, sending CONNECT\n");
+        var buf: [256]u8 = undefined;
+        const len = buildConnect(&buf);
+        if (len > 0) {
+            _ = tls_mod.getSession().send(buf[0..len]);
+        }
+    } else {
+        console.puts("[mqtt] TCP connected, sending CONNECT\n");
+        pending = .connect_pkt;
+        pending_token = 1;
+        netif.stack().tcpMarkSendReady(conn_id);
+    }
 }
 
 fn onRecv(_: *anyopaque, _: stack_mod.ConnId, data: []const u8) void {
@@ -136,6 +150,7 @@ pub fn connectBroker(ip: [4]u8, port: u16, client_id: []const u8) bool {
     @memcpy(client_id_buf[0..id_len], client_id[0..id_len]);
     client_id_len = id_len;
     state = .connecting;
+    tls_mode = false;
 
     const id = netif.stack().tcpConnect(ip, port, vtable) orelse {
         console.puts("[mqtt] TCP connect failed\n");
@@ -149,7 +164,6 @@ pub fn connectBroker(ip: [4]u8, port: u16, client_id: []const u8) bool {
 
 pub fn publish(topic: []const u8, payload: []const u8) bool {
     if (state != .connected) return false;
-    if (pending != .none) return false;
 
     const tl = @min(topic.len, pub_topic_buf.len);
     const pl = @min(payload.len, pub_payload_buf.len);
@@ -158,31 +172,58 @@ pub fn publish(topic: []const u8, payload: []const u8) bool {
     @memcpy(pub_payload_buf[0..pl], payload[0..pl]);
     pub_payload_len = pl;
 
-    pending = .publish_pkt;
-    pending_token += 1;
-    netif.stack().tcpMarkSendReady(conn_id);
-    return true;
+    if (tls_mode) {
+        var buf: [700]u8 = undefined;
+        const len = buildPublish(&buf);
+        if (len > 0) {
+            _ = tls_mod.getSession().send(buf[0..len]);
+            return true;
+        }
+        return false;
+    } else {
+        if (pending != .none) return false;
+        pending = .publish_pkt;
+        pending_token += 1;
+        netif.stack().tcpMarkSendReady(conn_id);
+        return true;
+    }
 }
 
 pub fn subscribe(topic: []const u8) bool {
     if (state != .connected) return false;
-    if (pending != .none) return false;
 
     const tl = @min(topic.len, sub_topic_buf.len);
     @memcpy(sub_topic_buf[0..tl], topic[0..tl]);
     sub_topic_len = tl;
 
-    pending = .subscribe_pkt;
-    pending_token += 1;
-    netif.stack().tcpMarkSendReady(conn_id);
-    return true;
+    if (tls_mode) {
+        var buf: [256]u8 = undefined;
+        const len = buildSubscribe(&buf);
+        if (len > 0) {
+            _ = tls_mod.getSession().send(buf[0..len]);
+            return true;
+        }
+        return false;
+    } else {
+        if (pending != .none) return false;
+        pending = .subscribe_pkt;
+        pending_token += 1;
+        netif.stack().tcpMarkSendReady(conn_id);
+        return true;
+    }
 }
 
 pub fn disconnect() void {
     if (state == .connected) {
-        pending = .disconnect_pkt;
-        pending_token += 1;
-        netif.stack().tcpMarkSendReady(conn_id);
+        if (tls_mode) {
+            const disc = [2]u8{ PACKET_DISCONNECT, 0 };
+            _ = tls_mod.getSession().send(&disc);
+            tls_mod.getSession().close();
+        } else {
+            pending = .disconnect_pkt;
+            pending_token += 1;
+            netif.stack().tcpMarkSendReady(conn_id);
+        }
     }
     state = .disconnected;
 }
@@ -190,9 +231,17 @@ pub fn disconnect() void {
 pub fn poll() void {
     if (state != .connected) return;
 
+    if (tls_mode) {
+        tls_mod.getSession().pump();
+    }
+
     const now = hal.millis();
     if (now - last_ping_ms >= @as(u64, keepalive_s) * 1000) {
-        if (pending == .none) {
+        if (tls_mode) {
+            const ping = [2]u8{ PACKET_PINGREQ, 0 };
+            _ = tls_mod.getSession().send(&ping);
+            last_ping_ms = now;
+        } else if (pending == .none) {
             pending = .ping_pkt;
             pending_token += 1;
             netif.stack().tcpMarkSendReady(conn_id);

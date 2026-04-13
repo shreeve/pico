@@ -28,11 +28,37 @@ Everything is on `main`. No feature branches.
 **Not yet validated on hardware:**
 - MQTT broker connection (client code exists, TCP is proven)
 - Script push over TCP port 9001 (listener registered, untested)
-- TLS (BearSSL integration planned — see "What Is Next")
+- TLS 1.2 (BearSSL integrated, code compiles, needs hardware test — see below)
 - OTA firmware update
 - Flash KV write (read works via XIP, write needs RAM flash driver)
 
 ### Recent Changes (this session)
+
+BearSSL TLS 1.2 integration for secure MQTT:
+
+1. **BearSSL vendored** — `ext/bearssl/` (293 C source files, MIT license).
+   All sources compiled for ARM Cortex-M0+ with `BR_LOMUL=1` for efficient
+   32-bit multiply paths. Platform-specific code (x86, POWER8) compiles to
+   empty translation units via `#if` guards.
+2. **Libc shim: `limits.h`** — added for BearSSL's `inner.h` dependency.
+3. **`src/tls/bearssl.zig`** — Zig bindings to BearSSL C API. Wraps engine
+   state machine, buffer access, client context, x509 known-key trust,
+   SHA-256, HMAC-DRBG, and cipher suite configuration.
+4. **`src/tls/entropy.zig`** — ROSC + timer jitter entropy collector.
+   Oversamples 4096 ROSC bits + 64 timer jitter samples, conditions through
+   SHA-256, seeds BearSSL HMAC-DRBG. Supports periodic reseed.
+5. **`src/tls/tls.zig`** — TLS session adapter bridging BearSSL ↔ TCP
+   AppVTable. Key design: ciphertext TX retention buffer (ring) holds
+   encrypted bytes between BearSSL output and TCP ACK — TLS records are
+   stateful and cannot be regenerated for TCP retransmit. ~10KB RAM per
+   session (4KB RX + 2KB TX BearSSL I/O + 2KB retention + 2KB app queues).
+6. **MQTT over TLS** — `mqtt.connectBrokerTls()` connects through TLS session
+   with known-key trust (pin broker RSA public key). In TLS mode, MQTT sends
+   packets eagerly via `tls.send()` instead of the lazy `produce_tx` pattern.
+   Cipher suite: ECDHE_RSA_WITH_AES_128_GCM_SHA256.
+7. **Firmware size**: 381KB payload (763KB UF2), fits in 768KB partition.
+
+### Previous Session Changes
 
 Major refactoring and hardening pass across the network stack:
 
@@ -147,6 +173,10 @@ src/
 │   ├── descriptors.zig       USB descriptor types
 │   ├── ftdi.zig              FTDI USB-to-serial driver
 │   └── astm.zig              ASTM E1394 medical protocol parser
+├── tls/                      TLS 1.2 via BearSSL
+│   ├── bearssl.zig           Zig bindings to BearSSL C API
+│   ├── tls.zig               TLS session adapter (TCP ↔ BearSSL)
+│   └── entropy.zig           ROSC entropy for HMAC-DRBG seeding
 ├── provisioning/
 │   └── captive_portal.zig    WiFi AP-mode provisioning (stub)
 └── libc/                     Freestanding C stubs
@@ -246,15 +276,18 @@ No debug probe, no BOOTSEL button, no OpenOCD.
 
 ### Immediate next
 
-4. **Integrate BearSSL for TLS 1.2** — required for medical compliance.
-   Vendor BearSSL C sources in `ext/bearssl/`, compile like MQuickJS
-   (freestanding C, no malloc). Wrap in `src/tls/bearssl.zig`. Enable
-   MQTT over TLS (port 8883) and secure telnet shell (or SSH-lite).
-   BearSSL needs ~25KB RAM per session, ~20KB flash. Fits in RP2040
-   budget if JS VM heap is reduced to 64KB.
+4. **Validate TLS on hardware** — BearSSL is integrated and compiles.
+   Test with a Mosquitto broker using TLS on port 8883. Steps:
+   - Set up Mosquitto with a self-signed RSA cert on the LAN
+   - Extract the broker's RSA public key for known-key pinning
+   - Call `mqtt.connectBrokerTls()` with the broker IP and key
+   - Verify TLS handshake completes (watch `[tls]` log messages)
+   - Test MQTT publish/subscribe over the TLS connection
 
-5. **Test MQTT end-to-end** with a Mosquitto broker on the LAN.
-   The client code exists (`bindings/mqtt.zig`); TCP is now proven.
+5. **Test MQTT end-to-end** (plaintext first, then TLS).
+   The client code exists (`bindings/mqtt.zig`); TCP is proven.
+   Plaintext: `mqtt.connectBroker(ip, 1883, "pico")`
+   TLS: `mqtt.connectBrokerTls(ip, 8883, "pico", "broker", &key)`
 
 ### Near-term
 

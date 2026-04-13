@@ -99,12 +99,46 @@ The stack in `src/net/tcpip.zig` is a comptime-parameterized `NetStack(Config)`:
 
 ## What is next
 
-1. **Validate TCP handshake** on hardware (connect to a server or accept connection)
-2. **Test MQTT end-to-end** with a real Mosquitto broker
-3. **Integrate BearSSL** for client TLS (MQTT over TLS port 8883, HTTPS for OTA)
+1. ~~Validate TCP handshake~~ — **DONE** (telnet shell on port 23)
+2. **Test MQTT end-to-end** with a real Mosquitto broker (plaintext first)
+3. **Validate TLS on hardware** — BearSSL integrated, compiles, needs test.
+   TLS session adapter with ciphertext retention buffer bridges BearSSL ↔ TCP.
+   MQTT over TLS via `mqtt.connectBrokerTls()` (port 8883, known-key trust).
 4. **Implement flash write driver** (RAM-resident, for KV storage.set() and OTA)
 5. **Build OTA bootloader** (immutable, verifies SHA-256, copies staging to active)
 6. **Production security**: signed updates, authenticated script upload, JS sandboxing
+
+## TLS architecture
+
+```
+                    ┌─────────────────┐
+                    │   MQTT client   │
+                    │ (plaintext API) │
+                    └────────┬────────┘
+                             │ tls.send() / on_recv callback
+                    ┌────────┴────────┐
+                    │   TLS Session   │
+                    │  (bearssl.zig)  │
+                    │                 │
+                    │ ┌─────────────┐ │
+                    │ │ BearSSL SSL │ │
+                    │ │   engine    │ │
+                    │ └─────────────┘ │
+                    │ ┌─────────────┐ │
+                    │ │  ciphertext │ │
+                    │ │  TX retain  │ │
+                    │ └─────────────┘ │
+                    └────────┬────────┘
+                             │ AppVTable (produce_tx / on_recv)
+                    ┌────────┴────────┐
+                    │   TCP NetStack  │
+                    └─────────────────┘
+```
+
+BearSSL buffers: 4KB RX + 2KB TX I/O, ~10KB total per session.
+Cipher suite: ECDHE_RSA_WITH_AES_128_GCM_SHA256 (TLS 1.2 only).
+Trust model: x509 known-key (pin broker's RSA public key).
+Entropy: ROSC jitter + timer LSBs → SHA-256 → HMAC-DRBG.
 
 ## Scope boundary
 

@@ -121,6 +121,14 @@ These are real bugs we hit and fixed. Do NOT reintroduce them:
 
 21. **BDC TX header must use version 2 (0x20)**: Version 0 silently drops data frames.
 
+## BearSSL/TLS Gotchas
+
+22. **`BR_ARMEL_CORTEXM_GCC` uses Thumb-2 assembly**: Despite documentation saying "Cortex M0, M0+", the inline asm uses Thumb-2 instructions (`eor Rd, Rn`, three-operand `sub`). Set `BR_ARMEL_CORTEXM_GCC=0` for Cortex-M0+. Use `BR_LOMUL=1` instead for the important optimization (prefer 32×32→32 multiply).
+
+23. **TLS records cannot be regenerated for TCP retransmit**: The TCP stack's `produce_tx()` pattern assumes payload can be re-created on demand. TLS sequence numbers advance per record, making re-encryption produce different ciphertext. The TLS adapter must maintain a ciphertext retention buffer between BearSSL sendrec output and TCP ACK.
+
+24. **BearSSL `resume` is a Zig keyword**: Parameter names from the C API that clash with Zig keywords must be renamed in bindings (e.g. `resume` → `resume_session`).
+
 ## Zig 0.15.2 Key Points
 
 - `callconv(.C)` → `callconv(std.builtin.CallingConvention.c)` — use `const CC = std.builtin.CallingConvention;` then `callconv(CC.c)`
