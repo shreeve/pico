@@ -271,14 +271,32 @@ pub const VM = struct {
     const HeapAlloc = struct { val: Value, ptr: [*]u8 };
 
     /// Allocate a heap object and register it in the object registry.
-    /// Triggers GC and retries on heap exhaustion.
+    /// Triggers GC and retries on *either* heap-bytes exhaustion or
+    /// object-registry exhaustion.
+    ///
+    /// Prior version (pre-M7 in pico/src/ruby/nanoruby/UPSTREAM.md):
+    /// short-circuited on `obj_registry_count >= obj_registry.len`
+    /// before giving `gc()` a chance. Because `obj_registry_count` is
+    /// a high-water mark that `gc()` never decrements (it tombstones
+    /// slots via `raw_ptr = null`, letting `registerObj` reclaim
+    /// them), any program that ever reached MAX_OBJ_REGISTRY live
+    /// objects simultaneously would thereafter fail allocation forever,
+    /// even with plenty of dead slots. Observed on pico hardware via
+    /// a `puts "blink " + count.to_s; sleep_ms 500` loop failing with
+    /// TypeError after ~84 iterations (HWM saturation from per-iter
+    /// String allocations); see pico/ISSUES.md #20.
+    ///
+    /// New flow: try once, then gc() and try once more. Both attempts
+    /// go through `registerObj`, which walks for tombstones before
+    /// appending to the HWM.
     pub fn allocHeapObj(self: *VM, obj_type: heap_mod.ObjType, payload_bytes: u32) ?HeapAlloc {
-        if (self.obj_registry_count >= self.obj_registry.len) return null;
-        const raw = self.heap.allocObj(obj_type, payload_bytes) orelse {
-            self.gc();
-            const retry = self.heap.allocObj(obj_type, payload_bytes) orelse return null;
-            return self.registerObj(obj_type, retry);
-        };
+        if (self.tryAllocHeapObj(obj_type, payload_bytes)) |r| return r;
+        self.gc();
+        return self.tryAllocHeapObj(obj_type, payload_bytes);
+    }
+
+    fn tryAllocHeapObj(self: *VM, obj_type: heap_mod.ObjType, payload_bytes: u32) ?HeapAlloc {
+        const raw = self.heap.allocObj(obj_type, payload_bytes) orelse return null;
         return self.registerObj(obj_type, raw);
     }
 

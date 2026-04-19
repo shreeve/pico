@@ -343,7 +343,81 @@ Acceptance:
   2 bytes of count fields + 2 × 2 bytes of syms for `led_toggle` and
   `sleep_ms`).
 
-### M7 — (reserved for further A6 hardware iteration)
+### M7 — `allocHeapObj` GC tombstone-reclamation fix
+
+Problem caught on pico hardware soak: blinky_3.rb (`puts "blink " +
+count.to_s; sleep_ms 500`) ran for ~84 iterations then died with
+`[nanoruby] boot script error: TypeError`. Root cause traced to
+`vm/vm.zig::allocHeapObj`:
+
+```zig
+// pre-M7
+pub fn allocHeapObj(...) ?HeapAlloc {
+    if (self.obj_registry_count >= self.obj_registry.len) return null;
+    const raw = self.heap.allocObj(obj_type, payload_bytes) orelse {
+        self.gc();
+        const retry = self.heap.allocObj(obj_type, payload_bytes) orelse return null;
+        return self.registerObj(obj_type, retry);
+    };
+    return self.registerObj(obj_type, raw);
+}
+```
+
+`obj_registry_count` is a high-water mark — `gc()` never decrements
+it. `gc()` tombstones dead slots (sets `raw_ptr = null`); the
+separate `registerObj` function already knew how to walk for
+tombstones and reuse them. But the up-front HWM check short-circuited
+before `registerObj` ever got called on the HWM-saturated path. Once
+any program reached MAX_OBJ_REGISTRY (256) simultaneously live
+objects, every subsequent allocation returned null without a GC
+attempt. `Integer#to_s`'s `orelse Value.nil` then propagated nil
+into `String#+`, producing TypeError.
+
+Edit in `vm/vm.zig`:
+
+```zig
+// post-M7
+pub fn allocHeapObj(...) ?HeapAlloc {
+    if (self.tryAllocHeapObj(obj_type, payload_bytes)) |r| return r;
+    self.gc();
+    return self.tryAllocHeapObj(obj_type, payload_bytes);
+}
+
+fn tryAllocHeapObj(...) ?HeapAlloc {
+    const raw = self.heap.allocObj(obj_type, payload_bytes) orelse return null;
+    return self.registerObj(obj_type, raw);
+}
+```
+
+Both failure modes (heap-bytes-full OR registry-full) now trigger
+`gc()` once and retry via the same path that walks for tombstones.
+If after GC both conditions are STILL unrecoverable (genuinely 256
+live objects with no garbage OR a payload larger than the remaining
+compacted heap), the retry returns null and the caller's
+`orelse Value.nil` path kicks in as before — but that's now a true
+limit, not an artefact of the HWM check.
+
+No `.nrb` format change. No API change. The fix is source-visible
+only to contributors reading the vendored tree.
+
+Upstream intent: **yes — strongly recommended to upstream.** This is
+a straightforward bug, the kind that evades host-side tests because
+they tend to allocate <256 objects per test case. Pico's sustained-
+loop soak was the natural exercise.
+
+Acceptance (post-M7, verified locally):
+
+- `.js` UF2 still byte-identical (6265c96b...).
+- `.ruby` UF2 rebuilt (new hash; format unchanged so size is stable
+  modulo a few bytes for the refactored helper).
+- The blinky_3.rb TypeError should no longer appear; the script
+  should now run indefinitely or until some other resource saturates.
+  Hardware verification required to confirm.
+
+ISSUES.md #20 updated to mark this as resolved-pending-hardware-
+verification.
+
+### M8 — (reserved for further hardware iteration)
 
 Subsequent modifications enumerated here as they are committed.
 

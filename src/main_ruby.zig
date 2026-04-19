@@ -25,6 +25,7 @@ const rp2040 = hal.platform;
 const fmt = @import("lib/fmt.zig");
 const console = @import("bindings/console.zig");
 const wifi = @import("bindings/wifi.zig");
+const watchdog = @import("runtime/watchdog.zig");
 const rb_runtime = @import("ruby/runtime.zig");
 
 // These `comptime` imports exist for their side effect: each binding
@@ -70,13 +71,24 @@ const puts = fmt.puts;
 //                                      `wfe`, and without a periodic
 //                                      tick IRQ as a wake source,
 //                                      sleep_ms(ms) returns in µs.
-//   6. rb_runtime.runBootScript()    — `@embedFile`'d .nrb; normally
+//   6. watchdog.init(8000)           — 8 s timeout. Fed by
+//                                      `superloopTickOnce()` which is
+//                                      called from `sleep_ms` in the
+//                                      cooperative pump AND from the
+//                                      trailing fallback superloop
+//                                      below. A Ruby script that never
+//                                      yields (no `sleep_ms`) will
+//                                      reset the MCU after 8 s —
+//                                      deliberate per the yield
+//                                      contract in runtime.zig.
+//   7. rb_runtime.runBootScript()    — `@embedFile`'d .nrb; normally
 //                                      never returns (scripts use
 //                                      `while true`).
 //
-// If step 6 ever does return, the trailing `while (true)` below kicks
-// in as a fallback. For Phase A all scripts loop forever, so that
-// path is unreached in practice.
+// If step 7 ever does return (finite script, or an uncaught Ruby
+// exception bubbles all the way out), the trailing `while (true)`
+// below keeps pumping the superloop and feeding the watchdog so the
+// board stays alive and responsive to `reboot`.
 
 pub fn main() noreturn {
     hal.init();
@@ -118,6 +130,14 @@ pub fn main() noreturn {
 
     // Periodic tick BEFORE runBootScript — see boot-order comment above.
     rp2040.initPeriodicTick();
+
+    // Arm the watchdog. `superloopTickOnce()` feeds it every tick of
+    // the cooperative `sleep_ms` pump. A script that never yields
+    // will reset after 8 s — this is the designed behaviour per the
+    // yield contract in runtime.zig.
+    watchdog.init(8000);
+    watchdog.clearCrashCount();
+    puts("[boot] watchdog armed (8 s)\n");
 
     rb_runtime.runBootScript();
 

@@ -113,15 +113,11 @@ const script_bytecode = @embedFile("script_bytecode");
 /// entering the superloop. The script drives the LED via `led_toggle`
 /// and paces itself via `sleep_ms`, which internally pumps
 /// `superloopTickOnce()` — so even long-running Ruby `while true`
-/// loops keep the LED blink-state machine live and the UART reboot
-/// shell responsive.
-///
-/// TODO(phase-A-hardening): `superloopTickOnce()` also calls
-/// `watchdog.feed()`, but `watchdog.init(8000)` is NOT yet called on
-/// the Ruby path (see ISSUES.md #18). Until that lands, the feed is
-/// a no-op. Arm the watchdog in `main_ruby.zig` between
-/// `rb_runtime.init()` and `rp2040.initPeriodicTick()` once we've
-/// run a full 10-minute soak without surprises.
+/// loops keep the LED blink-state machine live, the UART reboot
+/// shell responsive, and the 8 s watchdog fed. A Ruby script that
+/// never yields will reset the MCU after 8 s, which is the designed
+/// behaviour per the cooperative-yield contract at the top of this
+/// file.
 pub fn runBootScript() void {
     var func: nanoruby.IrFunc = .{
         .bytecode = undefined,
