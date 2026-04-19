@@ -176,6 +176,56 @@
     watchdog at boot is a Phase A hardening that can land any time
     now that the 10-minute soak has proven stability in principle.
 
+20. **Sustained allocation eventually dies with TypeError (~84 iters on
+    blinky_3.rb).** Observed on real hardware: `blink 0..83` prints fine,
+    then `[nanoruby] boot script error: TypeError` and `runBootScript`
+    returns cleanly (the fallback superloop in `main_ruby.zig` keeps the
+    board alive and `reboot` still works).
+
+    Root cause is a real GC bug in upstream nanoruby's
+    `src/vm/vm.zig::allocHeapObj` (in our vendored tree):
+
+    ```zig
+    if (self.obj_registry_count >= self.obj_registry.len) return null;
+    ```
+
+    `obj_registry_count` is a high-water mark — never decremented.
+    `gc()` only tombstones dead slots (sets `raw_ptr = null`), it does
+    not shrink the count. `registerObj` knows how to walk for
+    tombstones and reuse them, but we short-circuit before calling it
+    when the HWM has reached 256 (`MAX_OBJ_REGISTRY`). GC is never
+    invoked on registry-full, so no tombstones exist to reuse.
+
+    In blinky_3.rb's `"blink " + count.to_s`, each iteration allocates
+    two heap Strings. After ~128 unique allocations (≈84 iterations
+    plus baseline live objects), the HWM hits 256. `Integer#to_s`'s
+    `orelse Value.nil` path triggers, then `String#+ (nil, nil)` →
+    TypeError.
+
+    **Phase A ceiling consequence**: any Ruby script allocating heap
+    objects in a loop dies within ~O(256/per-iter-alloc-count)
+    iterations. Scripts that only use fixnums or pre-allocated
+    constants (no to_s / no String#+ / no new arrays) are unaffected.
+    Script #1 and #2 fit this category; #3 doesn't.
+
+    **Fix**: one-line upstream change to `allocHeapObj` — try GC first
+    when the registry is full, then retry via `registerObj` (which
+    walks for tombstones). Roughly:
+
+    ```zig
+    pub fn allocHeapObj(self, obj_type, payload_bytes) ?HeapAlloc {
+        if (self.tryAlloc(obj_type, payload_bytes)) |r| return r;
+        self.gc();
+        return self.tryAlloc(obj_type, payload_bytes);
+    }
+    ```
+
+    Small, upstreamable, and lifts the ceiling from ~84 iterations to
+    "as long as live-set ≤ 256 simultaneously". Deliberately NOT fixed
+    in this Phase A snapshot per the scope directive — logged here
+    instead. If the user wants it landed, it's a ~10-line M7 on the
+    vendored tree.
+
 19. **`reboot` UART shell is duplicated between JS and Ruby paths.**
     The JS build's `src/main.zig::pollUart` handles `reboot` and
     `wifi` commands from the main superloop. The Ruby build's
