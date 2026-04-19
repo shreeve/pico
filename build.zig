@@ -5,8 +5,14 @@ const Board = enum {
     pico2_w,
 };
 
+const Engine = enum {
+    js,
+    ruby,
+};
+
 pub fn build(b: *std.Build) void {
     const board = b.option(Board, "board", "Target board") orelse .pico_w;
+    const engine = b.option(Engine, "engine", "Script engine: js (default) or ruby") orelse .js;
     const optimize = b.standardOptimizeOption(.{});
 
     const fw_query: std.Target.Query = switch (board) {
@@ -125,8 +131,16 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "pass", wifi_pass);
     build_options.addOption(bool, "usb_host", usb_host_enabled);
 
+    // Engine selects the root source file. `-Dengine=js` (default) keeps
+    // `src/main.zig` untouched so the firmware is byte-identical to the
+    // pre-integration build (docs/NANORUBY.md A2.5 acceptance gate).
+    const fw_root_source = switch (engine) {
+        .js => b.path("src/main.zig"),
+        .ruby => b.path("src/main_ruby.zig"),
+    };
+
     const fw_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = fw_root_source,
         .target = fw_target,
         .optimize = fw_optimize,
         .link_libc = false,

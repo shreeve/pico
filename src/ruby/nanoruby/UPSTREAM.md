@@ -128,7 +128,58 @@ surfaces the hosted-std surface explicitly and lets non-hosted embedders
 reuse the core table. See peer-review conversation
 `pico-nanoruby-integration-review-2026` for the design discussion.
 
-### M2 — (reserved for the public face `pico/src/ruby/nanoruby.zig`, A1.4)
+### M2 — Public module face + engine gate (A1.4 + A2)
+
+Combined into a single commit to keep the tree green. The plan's A1.4
+("create `pico/src/ruby/nanoruby.zig`") and A2.4 ("delete `pico/src/
+ruby/nanoruby.zig` toy stub in the same commit that adds the engine
+gate") describe the same file write — overwriting the pre-integration
+toy stub with the narrow public face. Splitting those into two commits
+either breaks `zig build` transiently or requires back-compat scaffolding.
+
+Pico-local files added (outside the vendored tree):
+
+- `pico/src/ruby/nanoruby.zig` — the public module face. Re-exports a
+  narrow surface: `VM`, `IrFunc`, `Value`, `Loader` (nrb deserializer),
+  `NativeFn`, `NativeMethodDef`, `installCoreNatives`,
+  `installPlatformNatives`, `CLASS_OBJECT`, `atom`. Nothing else from
+  the vendored tree is reachable from firmware code.
+- `pico/src/main_ruby.zig` — Ruby-engine root source file. At A2 it is
+  a stub (platform + console + banner + idle superloop). It will be
+  progressively wired at A3 (bindings adapter + runtime), A4
+  (cooperative sleep_ms), A5 (`@embedFile`'d `.nrb` bytecode).
+
+Pico-local files edited:
+
+- `pico/build.zig` — adds `Engine` enum + `-Dengine={js,ruby}` build
+  option + root-source-file selection. The `.js` arm keeps
+  `b.path("src/main.zig")` (untouched), so the default build path
+  compiles and produces the byte-identical pre-integration firmware.
+  Engine selection is done at the root-source-file level rather than
+  by branching in `main.zig`, on GPT-5.4's advice (review thread
+  `pico-nanoruby-integration-review-2026`): dead-branch imports in
+  `main.zig` would still pull the unselected engine's module graph
+  into the compile unit, defeating byte-identity.
+
+Acceptance (A2.5 / A6.7 gates, all hard requirements per
+docs/NANORUBY.md):
+
+- `-Dengine=js` UF2 byte-identical to pre-integration baseline:
+  PASSED. sha256 `6265c96b...` (plain), `82aad4c6...` (SSID),
+  `4cb28108...` (USB_HOST).
+- `-Dengine=ruby` compiles and produces a valid UF2:
+  PASSED. 494 blocks / 126364 bytes payload, `.text`=119544.
+- Hosted-std leak check (`strings $ELF | grep std.debug.print |
+  std.Io.File.stderr | std.Io.Threaded`): 0 matches on both engines.
+- All six existing build targets (`zig build`, `zig build uf2`,
+  `zig build test`, `zig build test-uart`, `zig build test-hal`,
+  `zig build test-main`) remain green.
+
+Upstream intent: n/a for these files (pico-local; vendored tree
+unchanged in this commit). The vendored `src/ruby/nanoruby/` is not
+touched by A2.
+
+### M3 — (reserved for bindings adapter + runtime.zig, A3)
 
 Subsequent modifications enumerated here as they are committed.
 
