@@ -257,7 +257,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = false,
     });
     test_hal_module.addImport("support", b.createModule(.{
-        .root_source_file = b.path("tests/support.zig"),
+        .root_source_file = b.path("src/test_support.zig"),
         .target = fw_target,
         .optimize = fw_optimize,
         .link_libc = false,
@@ -287,7 +287,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = false,
     });
     test_main_module.addImport("support", b.createModule(.{
-        .root_source_file = b.path("tests/support.zig"),
+        .root_source_file = b.path("src/test_support.zig"),
         .target = fw_target,
         .optimize = fw_optimize,
         .link_libc = false,

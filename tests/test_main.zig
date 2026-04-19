@@ -25,6 +25,7 @@ comptime {
 comptime {
     _ = deps.console;
     _ = deps.gpio;
+    _ = deps.led;
     _ = deps.timer;
     _ = deps.wifi;
     _ = deps.mqtt;
