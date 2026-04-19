@@ -233,7 +233,33 @@ Acceptance (A3 gates):
 - All six build targets green (js + test + test-uart + test-hal +
   test-main + ruby).
 
-### M4 — (reserved for A4 cooperative sleep_ms hardening)
+### M4 — Cooperative sleep_ms hardened (A4, pico-local only)
+
+No vendored-tree edits. All changes are in pico-local files.
+
+`pico/src/ruby/runtime.zig`:
+
+- `sleepMsCooperative(ms)` upgraded from A3's busy-loop to the full
+  production contract from `docs/NANORUBY.md` §A4:
+  * Per-call clamp of 60 000 ms (`MAX_SLEEP_MS` constant).
+  * `wfe` between cooperative pumps — CPU idles until the next IRQ
+    (10 ms periodic timer, UART RX, GPIO edges). No hot-loop.
+  * Re-entrancy guard (`in_sleep` flag) — if a future Phase B
+    callback dispatches from inside `sleep_ms`, the nested call
+    returns immediately rather than silently nesting the pump
+    (invariant #5 in the file header).
+  * Monotonic-wrap-safe deadline comparison: u32 subtraction +
+    signed bitcast produces correct ordering across the 32-bit
+    wrap.
+
+Acceptance:
+
+- `.js` byte-identical (plain): 6265c96b...
+- `.ruby` UF2: 207456 bytes payload (+40 vs A3), `.text`=200636,
+  hosted-std strings = 0.
+- All six build targets green.
+
+### M5 — (reserved for A5 host nrbc build + bytecode embedding)
 
 Subsequent modifications enumerated here as they are committed.
 

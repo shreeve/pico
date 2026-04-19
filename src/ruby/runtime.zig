@@ -94,26 +94,55 @@ pub fn superloopTickOnce() void {
     led.poll();
 }
 
+/// Hard clamp on a single `sleep_ms` call. Longer Ruby sleeps must
+/// be a Ruby-side loop of `sleep_ms` calls. Rationale: keeps the
+/// cooperative pump cadence tight.
+pub const MAX_SLEEP_MS: u32 = 60_000;
+
+/// Re-entrancy guard. `sleep_ms` is not re-entrant (invariant #5 in
+/// the file header). If a Phase B callback is ever dispatched from
+/// inside `sleep_ms`, this flag traps the caller rather than
+/// allowing an undetected nested pump.
+var in_sleep: bool = false;
+
 /// Cooperative sleep. Blocks Ruby execution for ≥ `ms` milliseconds
-/// while pumping the superloop. Stub at A3 (busy-wait on `millis`);
-/// the real implementation with `wfe` + 60 s clamp lands at A4.
+/// while pumping the superloop. Contract (docs/NANORUBY.md §A4):
+///   - Wall-clock based on `hal.millis()`.
+///   - Clamped per call to `MAX_SLEEP_MS` (60 s). Longer sleeps =
+///     Ruby-side loop.
+///   - Pumps `superloopTickOnce()` each iteration.
+///   - Uses `wfe` between pumps so the CPU idles until the next
+///     interrupt (periodic timer tick + UART RX + GPIO IRQs all
+///     wake).
+///   - Not cancellable from Ruby.
+///   - Not re-entrant — re-entry returns immediately without pumping.
 pub fn sleepMsCooperative(ms: u32) void {
-    if (ms == 0) {
+    if (in_sleep) return; // invariant #5: refuse to nest
+    in_sleep = true;
+    defer in_sleep = false;
+
+    const clamped: u32 = @min(ms, MAX_SLEEP_MS);
+    if (clamped == 0) {
         superloopTickOnce();
         return;
     }
+
     // `hal.millis()` is u64; fold to u32 so overflow arithmetic wraps
     // cleanly at 32 bits. 2^32 ms ≈ 49.7 days — longer than any
-    // single sleep_ms can span (A4 clamp is 60 s).
+    // single sleep_ms can span (`clamped` ≤ 60 000).
     const start: u32 = @truncate(hal.millis());
-    const deadline: u32 = start +% ms;
+    const deadline: u32 = start +% clamped;
+
     while (true) {
         const now: u32 = @truncate(hal.millis());
         const delta: i32 = @bitCast(now -% deadline);
         if (delta >= 0) break;
         superloopTickOnce();
-        // Without `wfe` we busy-loop the CPU. That's acceptable at A3
-        // for correctness validation; A4 replaces this with `wfe` +
-        // 60 s clamp for the production semantics.
+        // wfe: sleep the core until the next event. Wake sources
+        // include the 10 ms periodic timer (set up in main_ruby.zig
+        // via `rp2040.initPeriodicTick()`), UART RX IRQ, and GPIO
+        // edge-triggered IRQs. The deadline check at loop top re-
+        // evaluates `hal.millis()` post-wake and exits when due.
+        asm volatile ("wfe");
     }
 }
