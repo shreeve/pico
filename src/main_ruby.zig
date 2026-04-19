@@ -72,12 +72,18 @@ pub fn main() noreturn {
     };
     puts("[boot] nanoruby VM ready (32 KB heap)\n");
 
-    // A5 will load a `.nrb` bytecode blob and execute it here.
-    rb_runtime.runBootScript();
-
+    // CRITICAL: set up the 10 ms periodic tick BEFORE entering the Ruby
+    // boot script. `runBootScript()` calls `vm.execute()` which enters
+    // the `while true` loop in blinky.rb and never returns. That loop
+    // pumps the superloop via `sleep_ms`'s cooperative tick + `wfe`.
+    // Without `initPeriodicTick()`, `wfe` has no reliable wake source
+    // and either spin-wakes on stray events or hangs — either way,
+    // `sleep_ms(500)` doesn't actually sleep 500 ms.
     rp2040.initPeriodicTick();
 
-    puts("[boot] entering superloop (no boot script — A5 not yet wired)\n");
+    rb_runtime.runBootScript();
+
+    puts("[boot] entering superloop (script returned — unusual)\n");
 
     while (true) {
         rb_runtime.superloopTickOnce();
