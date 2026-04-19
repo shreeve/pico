@@ -120,28 +120,26 @@
 
 ## Nanoruby integration (Phase A)
 
-15. **`.nrb` serializer does not recurse into `child_funcs`.** In
-    `src/ruby/nanoruby/vm/nrb.zig`, `serialize` writes a single
-    `IrFunc` and hardcodes the function count to 1. Ruby blocks
-    (`loop { … }`, `5.times { |i| … }`, `each { }`) compile to child
-    functions in the IR; they do not roundtrip through the current
-    `.nrb` format. Firmware scripts for Phase A use `while true` form
-    instead. Fix for Phase B: extend `serialize`/`deserialize` to walk
-    `child_funcs` recursively (bump `nrb.zig` format version to 2;
-    firmware loader then rejects v1 and v2 appropriately). This is
-    an upstream feature request for nanoruby, not a pico-local fix.
+15. **`.nrb` serializer does not recurse into `child_funcs` or
+    serialize `float_pool`.** In `src/ruby/nanoruby/vm/nrb.zig` (now
+    at format v2 after commit M6 in UPSTREAM.md), `serialize` writes
+    a single `IrFunc` with its `syms` + `string_literals` tables but
+    NOT `child_funcs` or `float_pool`. Ruby blocks (`loop do … end`,
+    `5.times { }`, `each { }`) compile to child functions and float
+    literals populate `float_pool`; neither roundtrips through v2.
+    Phase A scripts use `while true` and no floats. Phase B fix:
+    extend serialize/deserialize to walk `child_funcs` recursively
+    and serialize `float_pool`; bump format version to 3. Upstream
+    feature request for nanoruby, not a pico-local fix.
 
-16. **`Loader.deserialize(data, &func)` only initializes 5 fields.**
-    `nregs`, `nlocals`, `bytecode_len`, `bytecode`, `const_pool` are
-    populated; `child_funcs`, `syms`, `param_spec`, `name_sym`,
-    `source_line`, `captured_mask`, `string_literals`, `float_pool`
-    are left at caller-supplied values (or `undefined` if the caller
-    used `var func: IrFunc = undefined`). Pico's `runBootScript`
-    explicitly zero-initialises the 5 no-default fields before
-    deserialize; the rest use the struct defaults (`&.{}` / `0`). If
-    issue #15 is fixed for blocks, `deserialize` will also need to
-    populate `child_funcs`, `syms`, `string_literals`, `float_pool`
-    from the serialized payload.
+16. **~~`Loader.deserialize(data, &func)` only initializes 5 fields.~~**
+    Partially resolved by M6 (.nrb format v2 now populates `syms` and
+    `string_literals` too). Still unset by deserialize: `child_funcs`,
+    `float_pool`, `param_spec`, `name_sym`, `source_line`,
+    `captured_mask`. Pico's `runBootScript` zero-initialises the 5
+    no-default fields and relies on struct defaults (`&.{}` / `0`)
+    for the rest. When issue #15 is fixed, the remaining fields will
+    be populated from the wire format.
 
 17. **Native-method error raising depends on `pending_native_error`
     being checked by the VM.** `bindings_adapter.zig` returns

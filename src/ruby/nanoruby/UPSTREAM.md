@@ -291,8 +291,59 @@ Acceptance (all A5 gates green):
 - Hosted-std strings check: 0 matches.
 - All six build targets green.
 
-### M6 — (reserved for A6 hardware iteration, if any vendored-tree
-edits are needed)
+### M6 — `.nrb` format v2: serialize syms + string_literals (A6 fix)
+
+Problem caught on hardware: blinky.rb embedded with `.nrb` v1
+deserialized to an `IrFunc` whose `syms` and `string_literals` slices
+were left at their struct defaults (`&.{}`). Any SEND / LOAD_SYM /
+LOAD_GVAR / LOAD_STRING opcode then over-indexed into the empty
+slice and the VM raised `ConstOutOfBounds`. On-device picocom output:
+
+    [nanoruby] executing boot script
+    [nanoruby] boot script error: ConstOutOfBounds
+
+The v1 format was only ever exercised (upstream) by the LOAD_CONST /
+ADD / RETURN tests in `vm/nrb.zig` — programs without method calls
+or string literals. Any realistic script hits this.
+
+Edits to `vm/nrb.zig`:
+
+- Bump `VERSION` from 1 to 2. Firmware rejects v1 blobs with
+  `NrbError.BadVersion`.
+- Function header grows from 5 bytes to 7 bytes: add `sym_count` (u8)
+  and `string_count` (u8) after the existing `const_count`.
+- Serialize the syms array (u16 atom IDs, LE) after the constants.
+- Serialize string literals after the syms: each string prefixed with
+  its u16 LE length, then raw bytes.
+- Add `sym_storage: [256]u16` and `string_storage: [256][]const u8`
+  file-scope BSS statics for the deserialized slice backings. String
+  byte-slice pointers alias into the blob (.rodata on firmware);
+  LOAD_STRING copies into the heap on materialisation, so the alias
+  is safe.
+- Reject `.nrb` blobs with const/sym/string counts >255 on the wire;
+  Phase B can widen if needed.
+
+Explicitly NOT yet serialized (still in ISSUES.md #15):
+
+- `child_funcs` — blocks (`loop do … end`, `5.times { }`, `each { }`)
+  remain unsupported at Phase A. Scripts use `while true` instead.
+- `float_pool` — no float-literal use in Phase A scripts.
+
+Upstream intent: **yes — strongly recommended to upstream.** The v1
+format is buggy for any realistic program; v2 (plus eventual v3 with
+child_funcs + floats) is the correct shape.
+
+Acceptance:
+
+- `.js` still byte-identical (6265c96b...).
+- `.ruby` UF2: 814 blocks / 208152 bytes payload (+32 bytes .text for
+  the new serialize logic, +2560 bytes .bss for the two new storage
+  arrays).
+- blinky.rb now serializes to 52 bytes (was 46 under v1 — additional
+  2 bytes of count fields + 2 × 2 bytes of syms for `led_toggle` and
+  `sleep_ms`).
+
+### M7 — (reserved for further A6 hardware iteration)
 
 Subsequent modifications enumerated here as they are committed.
 
