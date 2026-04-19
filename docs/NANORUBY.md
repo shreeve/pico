@@ -1,5 +1,28 @@
 # Nanoruby on pico — integration plan
 
+## Handoff preflight (run before touching code)
+
+This doc is a self-contained execution plan. Before starting A1, verify every item below passes. If any fails, stop and resolve before proceeding.
+
+- [ ] `zig version` prints `0.16.0` (stock upstream release).
+- [ ] `git log --oneline -3` shows commits `1dfbff9` (this plan), `eb7452c` (test-hal/test-main fixes), and `c297361` (0.16.0 migration).
+- [ ] `ls ~/Data/Code/nanoruby/src/vm/vm.zig` returns a real file. **If nanoruby lives elsewhere on your machine, update every `~/Data/Code/nanoruby` reference in this doc before executing A1.**
+- [ ] `git status` shows the expected pre-existing dirty state:
+      `M src/main.zig`, `?? src/ruby/`. That is *not* uncommitted migration work — it is the user's pre-migration nanoruby demo that this plan absorbs (toy stub deleted in A2).
+- [ ] From a clean rebuild (`rm -rf .zig-cache zig-out`), all six targets are green: `zig build`, `zig build uf2`, `zig build test`, `zig build test-uart`, `zig build test-hal`, `zig build test-main`. Baseline before any Ruby work.
+- [ ] Pico W connected via USB; `picotool` and `picocom` are known-working. See `AGENTS.md` § "Build & Flash Workflow" and § "Hardware Setup".
+- [ ] You have read `AGENTS.md` § "RP2040 Gotchas", § "CYW43 Gotchas", and § "Code Style". The plan references platform conventions documented there and will not restate them.
+- [ ] You have read `ZIG-0.16.0-QUICKSTART.md` at repo root if you are not already fluent in Zig 0.16 stdlib (`std.Io`, Juicy Main, `.empty` decl literals, `captureStdOut(.{})`, etc.).
+- [ ] You have `~/Data/Code/pico/docs/NANORUBY.md` open alongside a terminal in `~/Data/Code/pico`. Every path in this plan is relative to that directory unless explicitly prefixed with `~/`.
+
+Execution guidance:
+
+- Follow the checklist at the end of the doc in order. Do not batch A-phases. Each step either leaves the tree green or fails a measurable gate.
+- If anything in §"Freestanding compile constraint" or §"GC and native-binding rooting" feels unclear, re-read it before coding. Those two sections capture the non-obvious risks.
+- Use the `user-ai` MCP's `discuss` tool with `conversation_id: pico-nanoruby-integration-review-2026` to reach the peer AI review history if you need to revisit tradeoffs.
+
+---
+
 > **Status box**
 > - **State**: plan refined; ready to execute in a dedicated session.
 > - **Prerequisite**: Zig 0.15.2 → 0.16.0 migration of pico. **DONE** (commits `c297361` and `eb7452c` on `origin/main`; all six build targets green on 0.16.0).
