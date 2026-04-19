@@ -4,26 +4,25 @@
 // `zig build -Dengine=js` uses `src/main.zig` instead and is byte-identical
 // to the pre-integration firmware (see docs/NANORUBY.md A2.5 acceptance).
 //
-// Boot flow (progressively wired across A2–A5 in docs/NANORUBY.md):
-//   A2 (this file) — platform + console + banner, then idle superloop.
-//                    Proves the Ruby-engine build path compiles to a valid
-//                    UF2; no Ruby VM is actually invoked yet.
+// Boot flow across A2–A5 in docs/NANORUBY.md:
+//   A2 — platform + console + banner, idle superloop (stub).
 //   A3 — init the nanoruby VM (32 KB heap), install core + platform natives
-//        routed through `src/bindings/*.zig`, run boot superloop.
-//   A4 — cooperative sleep_ms with defined semantics.
-//   A5 — @embedFile'd .nrb bytecode + `Loader.deserialize` + execute.
+//        routed through `src/bindings/*.zig`, enter superloop with LED
+//        blink-state pump + watchdog. Done in this file. No Ruby script
+//        runs yet (that's A5).
+//   A4 — cooperative `sleep_ms` with defined semantics.
+//   A5 — `@embedFile`'d `.nrb` bytecode + `Loader.deserialize` + execute.
 //   A6 — hardware acceptance (blinky.rb).
 
 comptime {
     _ = @import("platform/startup.zig");
 }
 
-const build_config = @import("build_config");
 const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const fmt = @import("lib/fmt.zig");
 const console = @import("bindings/console.zig");
-const watchdog = @import("runtime/watchdog.zig");
+const rb_runtime = @import("ruby/runtime.zig");
 
 comptime {
     // Preserve the binding exports that the C function table expects.
@@ -39,7 +38,7 @@ const BANNER =
     \\
     \\  ┌─────────────────────────┐
     \\  │  pico v0.1.0 [ruby]     │
-    \\  │  A2 stub build          │
+    \\  │  A3 — VM initialized    │
     \\  └─────────────────────────┘
     \\
 ;
@@ -54,16 +53,30 @@ pub fn main() noreturn {
     hal.delayMs(5000);
 
     puts(BANNER);
-    puts("[boot] platform: RP2040 @ 125 MHz (ruby engine, A2 stub)\n");
-    puts("[boot] Ruby runtime integration lands in A3-A5 per docs/NANORUBY.md\n");
+    puts("[boot] platform: RP2040 @ 125 MHz (ruby engine)\n");
+
+    rb_runtime.init(.{ .heap_kb = 32 }) catch {
+        puts("[boot] FATAL: nanoruby VM init failed\n");
+        hang();
+    };
+    puts("[boot] nanoruby VM ready (32 KB heap)\n");
+
+    // A5 will load a `.nrb` bytecode blob and execute it here.
+    rb_runtime.runBootScript();
 
     rp2040.initPeriodicTick();
 
-    // A3 will replace this with the cooperative superloop from
-    // `src/ruby/runtime.zig` (watchdog.feed / scheduler.poll / led.poll /
-    // netif.poll / wifi.poll / mqtt.poll + VM tick).
+    puts("[boot] entering superloop (no boot script — A5 not yet wired)\n");
+
     while (true) {
+        rb_runtime.superloopTickOnce();
         asm volatile ("wfe");
+    }
+}
+
+fn hang() noreturn {
+    while (true) {
+        asm volatile ("wfi");
     }
 }
 

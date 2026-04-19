@@ -16,6 +16,8 @@ const atom_mod = @import("nanoruby/vm/atom.zig");
 pub const VM = vm_mod.VM;
 pub const IrFunc = vm_mod.IrFunc;
 pub const Value = value_mod.Value;
+pub const VmError = vm_mod.VmError;
+pub const ExecResult = vm_mod.ExecResult;
 
 // ── Bytecode loader (deserialize only on firmware; serialize is host) ─
 pub const Loader = @import("nanoruby/vm/nrb.zig");
@@ -33,3 +35,5 @@ pub const CLASS_OBJECT = class_mod.CLASS_OBJECT;
 
 // ── Atom/symbol interning ────────────────────────────────────────────
 pub const atom = atom_mod.atom;
+pub const ATOM_NEW = atom_mod.ATOM_NEW;
+pub const ATOM_INITIALIZE = atom_mod.ATOM_INITIALIZE;

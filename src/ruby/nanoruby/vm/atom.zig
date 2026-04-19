@@ -95,7 +95,16 @@ pub const ATOM_EACH_PAIR: Atom = 77;
 pub const ATOM_UPTO: Atom = 78;
 pub const ATOM_DOWNTO: Atom = 79;
 
-pub const WELL_KNOWN_COUNT: Atom = 81;
+// Added for the pico firmware's onboard-LED adapters (Pico W's LED is on
+// the CYW43 chip, not a raw GPIO pin — it's bound via bindings/led.zig
+// which owns the blink-state machine). See
+// pico/src/ruby/nanoruby/UPSTREAM.md M3.
+pub const ATOM_LED_ON: Atom = 81;
+pub const ATOM_LED_OFF: Atom = 82;
+pub const ATOM_LED_TOGGLE: Atom = 83;
+pub const ATOM_LED_BLINK: Atom = 84;
+
+pub const WELL_KNOWN_COUNT: Atom = 85;
 pub const FIRST_DYNAMIC: Atom = WELL_KNOWN_COUNT;
 
 // ── Name tables ──────────────────────────────────────────────────────
@@ -148,6 +157,10 @@ pub const well_known_by_name = [_]NameEntry{
     .{ .name = "join", .id = ATOM_JOIN },
     .{ .name = "keys", .id = ATOM_KEYS },
     .{ .name = "last", .id = ATOM_LAST },
+    .{ .name = "led_blink", .id = ATOM_LED_BLINK },
+    .{ .name = "led_off", .id = ATOM_LED_OFF },
+    .{ .name = "led_on", .id = ATOM_LED_ON },
+    .{ .name = "led_toggle", .id = ATOM_LED_TOGGLE },
     .{ .name = "length", .id = ATOM_LENGTH },
     .{ .name = "loop", .id = ATOM_LOOP },
     .{ .name = "map", .id = ATOM_MAP },
@@ -208,6 +221,8 @@ pub const atom_names = [WELL_KNOWN_COUNT][]const u8{
     "reduce",  "sort",       "to_a",        "each_pair",   "upto",
     "downto",
     "to_f",
+    // Pico-local LED adapter names (M3 in UPSTREAM.md). Indices 81-84.
+    "led_on",  "led_off",    "led_toggle",  "led_blink",
 };
 
 // ── Lookup ───────────────────────────────────────────────────────────

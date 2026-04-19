@@ -179,7 +179,61 @@ Upstream intent: n/a for these files (pico-local; vendored tree
 unchanged in this commit). The vendored `src/ruby/nanoruby/` is not
 touched by A2.
 
-### M3 — (reserved for bindings adapter + runtime.zig, A3)
+### M3 — LED well-known atoms for pico platform natives (A3)
+
+Problem: nanoruby's `vm/atom.zig` pre-interns all native-method names as
+well-known atoms (comptime-resolved via `atom("name")` in the platform-
+native table), but the upstream list stops at `ATOM_TO_F = 80`. It
+includes `gpio_*`, `wifi_*`, `mqtt_*`, `sleep_ms`, `millis` but not
+`led_on` / `led_off` / `led_toggle` / `led_blink`. The pico adapter
+table needs those names (Pico W's onboard LED is on the CYW43 chip,
+not a raw GPIO pin — it routes through `bindings/led.zig` which owns
+the blink-state machine).
+
+Edits in `vm/atom.zig`:
+
+- Add `ATOM_LED_ON = 81`, `ATOM_LED_OFF = 82`, `ATOM_LED_TOGGLE = 83`,
+  `ATOM_LED_BLINK = 84`.
+- Bump `WELL_KNOWN_COUNT` from `81` to `85`.
+- Add sorted entries to `well_known_by_name[]` between `last` and
+  `length`.
+- Append four entries to `atom_names[]` (index 81-84).
+
+Upstream intent: **yes — strongly recommended to upstream.** Nanoruby
+already pre-interned the `gpio_*` / `wifi_*` / `mqtt_*` platform native
+names speculatively; LED is the same kind of convenience atom.
+
+Pico-local files also added in this commit (A3):
+
+- `pico/src/ruby/runtime.zig` — firmware-facing VM lifecycle
+  (`init`, `runBootScript`, `sleepMsCooperative` stub [A4 upgrades],
+  `superloopTickOnce`). File header documents the 5 IRQ/async/GC
+  invariants from `docs/NANORUBY.md`.
+- `pico/src/ruby/bindings_adapter.zig` — the 11-entry platform-native
+  table for Phase A (`gpio_*`, `led_*`, `millis`, `sleep_ms`, `puts`).
+  Each adapter routes to `bindings/*.zig` internal Zig APIs (for LED +
+  console) or directly to `hal.platform.*` (for stateless GPIO and
+  read-only clock) per `docs/NANORUBY.md` A3.
+- `pico/src/ruby/nanoruby.zig` — small additions (`VmError`,
+  `ExecResult`, `ATOM_NEW`, `ATOM_INITIALIZE` re-exports).
+- `pico/src/main_ruby.zig` — upgraded from A2 stub to call
+  `rb_runtime.init(.{ .heap_kb = 32 })` and enter the superloop with
+  `rb_runtime.superloopTickOnce()` + `wfe`. Ruby VM is now live; no
+  script is loaded yet (that's A5).
+
+Acceptance (A3 gates):
+
+- `-Dengine=js` UF2 still byte-identical (plain/SSID/USB_HOST all
+  match pre-integration baselines).
+- `-Dengine=ruby` compiles to 207416-byte payload UF2
+  (`.text`=200596, `.data`=6820, `.bss`=157336). Below the
+  `docs/NANORUBY.md` memory budget (≤550 KB flash target).
+- `strings $ELF | grep 'std\\.debug\\.print|std\\.Io\\.File\\.stderr|std\\.Io\\.Threaded'`
+  returns 0 on both engines.
+- All six build targets green (js + test + test-uart + test-hal +
+  test-main + ruby).
+
+### M4 — (reserved for A4 cooperative sleep_ms hardening)
 
 Subsequent modifications enumerated here as they are committed.
 
