@@ -1,8 +1,13 @@
-/// UF2 converter — turns an ELF binary into a UF2 file for flashing
-/// via the RP2040/RP2350 USB bootloader.
-///
-/// UF2 format: https://github.com/microsoft/uf2
-/// Each 512-byte block carries up to 256 bytes of payload.
+// UF2 converter — turns an ELF binary into a UF2 file for flashing
+// via the RP2040/RP2350 USB bootloader.
+//
+// UF2 format: https://github.com/microsoft/uf2
+// Each 512-byte block carries up to 256 bytes of payload.
+//
+// Adopts Zig 0.16 "Juicy Main" (std.process.Init) to thread an `io` and a
+// process-lifetime arena for allocation. Arena is the correct choice for a
+// short-lived CLI — avoids the DebugAllocator O(n) per-alloc tracking overhead
+// that `init.gpa` imposes in Debug builds.
 const std = @import("std");
 
 const UF2_MAGIC_START0: u32 = 0x0A324655; // "UF2\n"
@@ -33,12 +38,12 @@ comptime {
     std.debug.assert(@sizeOf(UF2Block) == 512);
 }
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const io = init.io;
 
-    if (args.len < 4) {
+    const args = try init.minimal.args.toSlice(arena);
+    if (args.len != 4) {
         std.debug.print("usage: uf2conv <input.elf> <rp2040|rp2350> <output.uf2>\n", .{});
         std.process.exit(1);
     }
@@ -58,25 +63,24 @@ pub fn main() !void {
 
     const flash_base: u32 = 0x10000000;
 
-    // Read input binary
-    const input_file = try std.fs.cwd().openFile(input_path, .{});
-    defer input_file.close();
+    const cwd = std.Io.Dir.cwd();
 
-    const binary = try input_file.readToEndAlloc(allocator, 16 * 1024 * 1024);
-    defer allocator.free(binary);
+    const input_file = try cwd.openFile(io, input_path, .{});
+    defer input_file.close(io);
+
+    var in_reader = input_file.reader(io, &.{});
+    const binary = try in_reader.interface.allocRemaining(arena, .limited(16 * 1024 * 1024));
 
     // ELF parsing — extract loadable segments at flash addresses.
     // For simplicity, if it's a raw binary we convert directly.
     // For ELF, we extract .text and .data that live in flash.
-    const payload = if (isElf(binary)) try extractElfPayload(allocator, binary) else binary;
-    defer if (isElf(binary)) allocator.free(payload);
+    const payload = if (isElf(binary)) try extractElfPayload(arena, binary) else binary;
 
     // Calculate number of UF2 blocks
     const num_blocks: u32 = @intCast((payload.len + UF2_PAYLOAD_SIZE - 1) / UF2_PAYLOAD_SIZE);
 
-    // Write output
-    const output_file = try std.fs.cwd().createFile(output_path, .{});
-    defer output_file.close();
+    const output_file = try cwd.createFile(io, output_path, .{});
+    defer output_file.close(io);
 
     var block_no: u32 = 0;
     var offset: usize = 0;
@@ -92,7 +96,9 @@ pub fn main() !void {
         @memcpy(block.data[0..chunk_size], payload[offset..][0..chunk_size]);
 
         const bytes: [*]const u8 = @ptrCast(&block);
-        try output_file.writeAll(bytes[0..512]);
+        try output_file.writeStreamingAll(io, bytes[0..512]);
+        // Advance by full UF2 payload slot; partial final chunk is zero-padded
+        // (UF2Block.data defaults to zeroes), so fixed stepping stays correct.
         offset += UF2_PAYLOAD_SIZE;
     }
 

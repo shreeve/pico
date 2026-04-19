@@ -7,7 +7,7 @@ Read these files in order:
 2. **HANDOFF.md** — current state, source tree, what's proven, what's next
 3. **docs/NETWORKING.md** — networking stack status and architecture
 4. **docs/CYW43.md** — low-level CYW43 bring-up and protocol findings
-5. **docs/ZIG-0.15.2.md** — Zig language reference (API changes from older versions)
+5. **ZIG-0.16.0-REFERENCE.md** — authoritative Zig language/stdlib reference (the codebase targets 0.16.0; see `build.zig.zon`). Its companion `ZIG-0.16.0-QUICKSTART.md` is the protocol for further 0.16-era migrations. The legacy `docs/ZIG-0.15.2.md` is kept for historical context only.
 
 ## What We're Building
 
@@ -139,14 +139,26 @@ These are real bugs we hit and fixed. Do NOT reintroduce them:
 
 28. **WPA3/mixed-mode APs break WPA2 join**: CYW43 WPA2-PSK handshake gets consistent DEAUTH type=6 from APs running WPA3 or WPA2/WPA3 transition mode. Set router to WPA2-only or use a simple AP (iPhone hotspot works).
 
-## Zig 0.15.2 Key Points
+## Zig 0.16.0 Key Points (this repo targets 0.16.0)
+
+Carried forward from 0.15.x and still in play here:
 
 - `callconv(.C)` → `callconv(std.builtin.CallingConvention.c)` — use `const CC = std.builtin.CallingConvention;` then `callconv(CC.c)`
 - `addExecutable` requires `.root_module` from `b.createModule(...)`
 - `@setCold` removed, `usingnamespace` removed, `opaque` is a keyword
 - `@import("root")` refers to the build system's root source file — used by startup.zig
 - For freestanding ARM: no libc, no stack unwinding, `@memset`/`@memcpy` are compiler builtins
-- See `docs/ZIG-0.15.2.md` for the comprehensive reference
+
+New in 0.16 (host-side code only — firmware is freestanding and unaffected):
+
+- `pub fn main(init: std.process.Init) !void` ("Juicy Main") replaces `argsAlloc` / `page_allocator` for host CLIs. See `tools/uf2conv.zig`. Prefer `init.arena.allocator()` for short-lived CLIs — `init.gpa` is a `DebugAllocator` in Debug builds and has O(n)-per-allocation tracking that can slow allocator-heavy workloads up to 1400×.
+- `std.fs.*` → `std.Io.Dir` / `std.Io.File`, with `io: Io` threaded through every call. `std.fs.cwd()` → `std.Io.Dir.cwd()`.
+- `file.readToEndAlloc(gpa, max)` → `file.reader(io, &.{}).interface.allocRemaining(gpa, .limited(max))`. Cap-breach error is `error.StreamTooLong`.
+- `file.writeAll` → `file.writeStreamingAll(io, bytes)`.
+- `Build.Step.Run.captureStdOut()` now takes a `CapturedStdIo.Options` arg — pass `.{}` for defaults.
+- `@cImport` is deprecated in favour of `b.addTranslateC`, but in this repo we keep `@cImport` out of the compile path entirely by checking in pre-translated bindings (`src/tls/bearssl_c.zig`). See that file's header for why Aro-backed translate-c is risky on our freestanding + `-nostdinc` BearSSL setup.
+
+See `ZIG-0.16.0-REFERENCE.md` (repo root) for the full changelog, cheat sheet, and decoder tables.
 
 ## Code Style
 

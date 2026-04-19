@@ -6,9 +6,7 @@
 //
 // BearSSL docs: https://bearssl.org/apidoc/
 
-const c = @cImport({
-    @cInclude("bearssl.h");
-});
+const c = @import("bearssl_c.zig");
 
 // ── Types ────────────────────────────────────────────────────────────
 

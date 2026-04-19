@@ -117,3 +117,22 @@
     Now configurable via `Config.tcp_timewait_ms` (default 30 seconds).
     Timer is driven by elapsed wall-clock milliseconds, not loop iterations.
     Elapsed is clamped to 10s max to avoid instant draining after stalls.
+
+## Toolchain / upstream (Zig 0.16.0)
+
+13. **Aro translate-c miscompiles BearSSL inline helpers under 0.16.**
+    `@cImport({ @cInclude("bearssl.h"); })` produces Zig code that 0.16
+    refuses to compile for `br_multihash_setimpl` / `br_multihash_getimpl`
+    (see https://github.com/ziglang/translate-c/issues/66 for the class).
+    Workaround: `src/tls/bearssl_c.zig` holds pre-translated bindings with
+    the two helpers hand-rewritten. `@cImport` is no longer on the compile
+    path. See that file's header for regeneration procedure.
+
+14. **Zig 0.16 rejects `ctx.*.array_field[idx]` through a `[*c]` pointer.**
+    Indexing an array field reached via `[*c]` auto-deref types the whole
+    expression as the array rather than the element, producing
+    `expected type '[N]T', found 'T'` on assignment. Reproducible with a
+    trivial extern-struct repro; looks like a 0.16 type-resolution regression.
+    Workaround in `src/tls/bearssl_c.zig`: bind the field to a properly-typed
+    pointer first (`const p: *[N]T = &ctx.*.field; p[idx] = x;`). Filing
+    upstream as a follow-up.

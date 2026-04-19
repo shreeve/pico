@@ -2,7 +2,7 @@
     .name = .pico,
     .version = "0.1.0",
     .fingerprint = 0x9ea0cb8250c8d2f4,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

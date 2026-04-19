@@ -55,12 +55,12 @@ pub fn build(b: *std.Build) void {
     // Generate mquickjs_atom.h (with -a flag)
     const gen_atoms = b.addRunArtifact(stdlib_gen);
     gen_atoms.addArgs(&.{ "-a", "-m32" });
-    const atoms_h = gen_atoms.captureStdOut();
+    const atoms_h = gen_atoms.captureStdOut(.{});
 
     // Generate pico_stdlib.h (without -a flag)
     const gen_stdlib = b.addRunArtifact(stdlib_gen);
     gen_stdlib.addArg("-m32");
-    const stdlib_h = gen_stdlib.captureStdOut();
+    const stdlib_h = gen_stdlib.captureStdOut(.{});
 
     // Place generated headers in a WriteFile step so we can use its
     // directory as a C include path.
