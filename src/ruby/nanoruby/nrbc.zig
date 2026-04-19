@@ -7,6 +7,7 @@ const Value = @import("vm/value.zig").Value;
 const VM = @import("vm/vm.zig").VM;
 const nrb = @import("vm/nrb.zig");
 const class = @import("vm/class.zig");
+const class_debug = @import("vm/class_debug.zig");
 const atom = @import("vm/atom.zig");
 
 const usage =
@@ -102,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
             }
         };
         SymLookup.comp = &compiler;
-        class.installNatives(&vm, &SymLookup.find);
+        class_debug.installNatives(&vm, &SymLookup.find);
         vm.setSymNew(atom.ATOM_NEW);
         vm.setSymInitialize(atom.ATOM_INITIALIZE);
 

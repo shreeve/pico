@@ -6,6 +6,7 @@ const Compiler = codegen.Compiler;
 const Value = @import("../vm/value.zig").Value;
 const VM = @import("../vm/vm.zig").VM;
 const class = @import("../vm/class.zig");
+const class_debug = @import("../vm/class_debug.zig");
 const atom = @import("../vm/atom.zig");
 
 /// Parse, compile, and execute Ruby source. Returns the result value.
@@ -34,7 +35,7 @@ pub fn compileAndRun(source: []const u8) !Value {
         }
     };
     SymLookup.comp = &compiler;
-    class.installNatives(&vm, &SymLookup.find);
+    class_debug.installNatives(&vm, &SymLookup.find);
 
     // Well-known atoms for core VM dispatch
     vm.setSymNew(atom.ATOM_NEW);
@@ -91,7 +92,7 @@ fn expectFloat(source: []const u8, expected: f64) !void {
         }
     };
     SymLookup.comp = &compiler;
-    class.installNatives(&vm, &SymLookup.find);
+    class_debug.installNatives(&vm, &SymLookup.find);
     vm.setSymNew(atom.ATOM_NEW);
     vm.setSymInitialize(atom.ATOM_INITIALIZE);
     const result = vm.execute(&func);

@@ -2543,6 +2543,7 @@ fn parseFloatLit(text: []const u8) ?f64 {
 // ═════════════════════════════════════════════════════════════════════
 
 const class_mod = @import("../vm/class.zig");
+const class_debug_mod = @import("../vm/class_debug.zig");
 
 fn compileAndRun(source: []const u8, sexp: Sexp) ?Value {
     var compiler = Compiler.init(source);
@@ -2555,7 +2556,7 @@ fn compileAndRun(source: []const u8, sexp: Sexp) ?Value {
         }
     };
     SymLookup.comp = &compiler;
-    class_mod.installNatives(&vm, &SymLookup.find);
+    class_debug_mod.installNatives(&vm, &SymLookup.find);
     vm.setSymNew(atom_mod.ATOM_NEW);
     vm.setSymInitialize(atom_mod.ATOM_INITIALIZE);
     const result = vm.execute(&func);

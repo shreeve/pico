@@ -77,14 +77,60 @@ This section is the authoritative log of pico-local edits to the vendored
 tree. Each entry records (a) what was changed, (b) why, (c) whether it is
 intended for upstreaming back to nanoruby.
 
-### M0 — Initial snapshot (this commit)
+### M0 — Initial snapshot (commit `0aa51f3`)
 
-- No source edits yet.
+- No source edits.
 - Pure `cp -R` of `~/Data/Code/nanoruby/src/.` → `pico/src/ruby/nanoruby/`.
 - Added this `UPSTREAM.md`.
 - Upstream intent: n/a (snapshot, not a modification).
 
-Subsequent modifications will be enumerated below as they are committed.
+### M1 — Native-method-table split (A1.3)
+
+Problem: nanoruby's original `vm/class.zig` installed a single
+`native_method_table` whose entries included both hosted-only debug
+natives (`puts`, `print`, `p` — bodies use `std.debug.print` and
+`std.Io.File.stderr()`) and MCU-facing platform stubs (`gpio_*`,
+`sleep_ms`, `millis`, `wifi_*`, `mqtt_*` — bodies use `std.debug.print`).
+Taking `&nativePuts` (and kin) as a comptime `NativeMethodDef` entry
+forces Zig to analyse those bodies for freestanding, which fails because
+`std.Io.File.stderr` / `std.Io.Threaded` have no freestanding backends.
+
+Edits:
+
+- `vm/class.zig`:
+  - Removed `writeValue`, `inspectValue`, `nativePuts`, `nativePrint`,
+    `nativeP`, `nativeGpioMode`, `nativeGpioWrite`, `nativeGpioRead`,
+    `nativeGpioToggle`, `nativeSleepMs`, `nativeMillis`,
+    `nativeWifiConnect`, `nativeWifiStatus`, `nativeWifiIp`,
+    `nativeMqttConnect`, `nativeMqttPublish`, `nativeMqttSubscribe`,
+    `nativeMqttStatus` (relocated to `class_debug.zig`).
+  - Renamed `native_method_table` → `core_native_table`; dropped its
+    `puts`/`print`/`p` entries and all platform-stub entries.
+  - Replaced `installNatives(vm, findSym)` with `installCoreNatives(vm)`
+    and a generic `installPlatformNatives(vm, table)` helper.
+  - Made `allocString` public so `class_debug.zig` can use it.
+- `vm/class_debug.zig` (new, host-only): receives the extracted natives,
+  plus `debug_native_table`, `default_platform_native_table`,
+  `installDebugNatives`, `installDefaultPlatformNatives`, and a
+  back-compat `installNatives` wrapper for upstream host callers.
+- `nrbc.zig`, `compiler/pipeline.zig`, `compiler/codegen.zig`:
+  switched the `class.installNatives` call to `class_debug.installNatives`
+  (4 call sites). These files are host-only so the switch is safe.
+
+Result: firmware build path transitively imports `vm/class.zig` through
+the public face; it never touches `class_debug.zig`. `vm/class.zig` is
+now freestanding-clean (verified with `zig build-obj -target
+thumb-freestanding-eabi -mcpu cortex_m0plus -OReleaseSmall`).
+
+Upstream intent: **yes — strongly recommended to upstream.** The split
+is also useful to upstream even without any MCU embedder because it
+surfaces the hosted-std surface explicitly and lets non-hosted embedders
+reuse the core table. See peer-review conversation
+`pico-nanoruby-integration-review-2026` for the design discussion.
+
+### M2 — (reserved for the public face `pico/src/ruby/nanoruby.zig`, A1.4)
+
+Subsequent modifications enumerated here as they are committed.
 
 ## How to re-vendor
 

@@ -277,15 +277,16 @@ pub const NativeMethodDef = struct {
     func: NativeFn,
 };
 
-/// Static table of all bootstrap native methods.
-/// Uses well-known atom IDs — no string lookup needed at registration.
-pub const native_method_table = [_]NativeMethodDef{
+/// Core native methods required for sane Ruby semantics. Pure Zig; must
+/// NOT reference hosted-only APIs (std.debug.print, std.Io.File.stderr,
+/// std.Io.Threaded) — those live in `class_debug.zig` and are only
+/// installed by hosted callers. Freestanding embedders (pico firmware)
+/// install this table via `installCoreNatives` plus a target-specific
+/// platform table via `installPlatformNatives`.
+pub const core_native_table = [_]NativeMethodDef{
     .{ .class_id = CLASS_CLASS, .name_atom = a("new"), .func = &nativeClassNew },
 
-    // Kernel / Object
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("puts"), .func = &nativePuts },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("print"), .func = &nativePrint },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("p"), .func = &nativeP },
+    // Kernel / Object — excludes puts/print/p (debug natives, see class_debug.zig)
     .{ .class_id = CLASS_OBJECT, .name_atom = a("to_s"), .func = &nativeObjectToS },
     .{ .class_id = CLASS_OBJECT, .name_atom = a("inspect"), .func = &nativeObjectInspect },
     .{ .class_id = CLASS_OBJECT, .name_atom = a("class"), .func = &nativeObjectClass },
@@ -417,34 +418,27 @@ pub const native_method_table = [_]NativeMethodDef{
     // TrueClass / FalseClass
     .{ .class_id = CLASS_TRUE_CLASS, .name_atom = a("to_s"), .func = &nativeTrueToS },
     .{ .class_id = CLASS_FALSE_CLASS, .name_atom = a("to_s"), .func = &nativeFalseToS },
-
-    // Platform stubs
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("gpio_mode"), .func = &nativeGpioMode },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("gpio_write"), .func = &nativeGpioWrite },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("gpio_read"), .func = &nativeGpioRead },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("gpio_toggle"), .func = &nativeGpioToggle },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("sleep_ms"), .func = &nativeSleepMs },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("millis"), .func = &nativeMillis },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("wifi_connect"), .func = &nativeWifiConnect },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("wifi_status"), .func = &nativeWifiStatus },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("wifi_ip"), .func = &nativeWifiIp },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("mqtt_connect"), .func = &nativeMqttConnect },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("mqtt_publish"), .func = &nativeMqttPublish },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("mqtt_subscribe"), .func = &nativeMqttSubscribe },
-    .{ .class_id = CLASS_OBJECT, .name_atom = a("mqtt_status"), .func = &nativeMqttStatus },
 };
 
-/// Register all native methods keyed by their well-known atom ID. The
-/// compiler interns well-known operator/method names so their compiler
+/// Register the core native methods keyed by their well-known atom ID.
+/// The compiler interns well-known operator/method names so their compiler
 /// sym_id equals the atom ID, which is what the class table expects.
-/// `findSym` is accepted for backward compatibility but no longer needed
-/// to gate registration — well-known-atom operators (`+`, `-`, `[]`, …)
-/// must be available at runtime even if the user source never mentions
-/// the method directly (e.g., `'a' + 'b'` falls back to `String#+` from
-/// inside the ADD opcode without the compiler ever interning `"+"`).
-pub fn installNatives(vm: *VM, findSym: *const fn ([]const u8) ?u16) void {
-    _ = findSym;
-    for (native_method_table) |entry| {
+/// Well-known-atom operators (`+`, `-`, `[]`, …) must be available at
+/// runtime even if the user source never mentions the method directly
+/// (e.g., `'a' + 'b'` falls back to `String#+` from inside the ADD opcode
+/// without the compiler ever interning `"+"`).
+///
+/// Core natives are freestanding-safe: no hosted-only std APIs. Hosted
+/// `puts`/`print`/`p` live in class_debug.zig; platform stubs likewise.
+pub fn installCoreNatives(vm: *VM) void {
+    installPlatformNatives(vm, &core_native_table);
+}
+
+/// Generic native-table installer used for platform-specific tables.
+/// Firmware embedders pass their own platform table (pico GPIO/LED/…);
+/// host builds pass `class_debug.default_platform_native_table`.
+pub fn installPlatformNatives(vm: *VM, table: []const NativeMethodDef) void {
+    for (table) |entry| {
         vm.class_table.defineMethodImpl(
             entry.class_id,
             entry.name_atom,
@@ -454,60 +448,11 @@ pub fn installNatives(vm: *VM, findSym: *const fn ([]const u8) ?u16) void {
 }
 
 // ── Native implementations ───────────────────────────────────────────
-
-/// Write a Value in Ruby `puts`/`print` form: strings unquoted, other
-/// values rendered via the VM's inspect (which quotes strings). `puts`
-/// of a heap string like `"hello"` prints `hello`, not `"hello"`.
-fn writeValue(vm: *const VM, v: Value) void {
-    if (vm.getStringData(v)) |s| {
-        std.debug.print("{s}", .{s});
-    } else if (v.isNil()) {
-        // nil prints as empty string in puts
-    } else {
-        inspectValue(vm, v);
-    }
-}
-
-/// Write a Value in Ruby `p` form (inspect-style): strings quoted,
-/// arrays/hashes/ranges fully rendered. Delegates to `VM.inspect`
-/// through a local writer that buffers onto stderr.
-fn inspectValue(vm: *const VM, v: Value) void {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    var buf: [4096]u8 = undefined;
-    var fw = std.Io.File.stderr().writer(io, &buf);
-    vm.inspect(&fw.interface, v) catch {};
-    fw.interface.flush() catch {};
-}
-
-fn nativePuts(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len == 0) {
-        std.debug.print("\n", .{});
-    } else {
-        for (args) |arg| {
-            writeValue(vm, arg);
-            std.debug.print("\n", .{});
-        }
-    }
-    return Value.nil;
-}
-
-fn nativePrint(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    for (args) |arg| {
-        writeValue(vm, arg);
-    }
-    return Value.nil;
-}
-
-fn nativeP(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    for (args, 0..) |arg, i| {
-        if (i > 0) std.debug.print(", ", .{});
-        inspectValue(vm, arg);
-    }
-    std.debug.print("\n", .{});
-    if (args.len == 1) return args[0];
-    return Value.nil;
-}
+//
+// Debug Kernel natives (`puts`, `print`, `p`) and default host-side
+// platform stubs (`gpio_*`, `sleep_ms`, `millis`, `wifi_*`, `mqtt_*`)
+// were extracted to `class_debug.zig` so this file stays freestanding-
+// safe. See pico/src/ruby/nanoruby/UPSTREAM.md for the re-vendor log.
 
 fn nativeObjectToS(vm: *VM, recv: Value, _: []const Value, _: ?Value) Value {
     return makeString(vm, recv);
@@ -872,92 +817,6 @@ fn nativeHashValues(vm: *VM, recv: Value, _: []const Value, _: ?Value) Value {
         elements[i] = data[i * 2 + 1]; // values are at odd indices
     }
     return alloc.val;
-}
-
-// ── Platform stubs (host-side, mirrors pico bindings API) ────────────
-
-fn nativeGpioMode(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len >= 2) {
-        const pin = args[0].asFixnum() orelse return Value.nil;
-        const mode = args[1].asFixnum() orelse return Value.nil;
-        std.debug.print("[gpio] mode pin={d} dir={d}\n", .{ pin, mode });
-    }
-    return Value.nil;
-}
-
-fn nativeGpioWrite(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len >= 2) {
-        const pin = args[0].asFixnum() orelse return Value.nil;
-        const val = args[1].asFixnum() orelse return Value.nil;
-        std.debug.print("[gpio] write pin={d} val={d}\n", .{ pin, val });
-    }
-    return Value.nil;
-}
-
-fn nativeGpioRead(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len >= 1) {
-        const pin = args[0].asFixnum() orelse return Value.false_;
-        std.debug.print("[gpio] read pin={d}\n", .{pin});
-    }
-    return Value.fromFixnumUnchecked(0);
-}
-
-fn nativeGpioToggle(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len >= 1) {
-        const pin = args[0].asFixnum() orelse return Value.nil;
-        std.debug.print("[gpio] toggle pin={d}\n", .{pin});
-    }
-    return Value.nil;
-}
-
-fn nativeSleepMs(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    if (args.len >= 1) {
-        const ms = args[0].asFixnum() orelse return Value.nil;
-        std.debug.print("[timer] sleep {d}ms\n", .{ms});
-        // On MCU: hal.sleep_ms(ms). On host: no-op stub.
-    }
-    return Value.nil;
-}
-
-fn nativeMillis(_: *VM, _: Value, _: []const Value, _: ?Value) Value {
-    // On MCU: hal.millis(). On host: return 0 as placeholder.
-    return Value.fromFixnumUnchecked(0);
-}
-
-fn nativeWifiConnect(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    _ = args;
-    std.debug.print("[wifi] connect (stub)\n", .{});
-    return Value.false_;
-}
-
-fn nativeWifiStatus(vm: *VM, _: Value, _: []const Value, _: ?Value) Value {
-    return allocString(vm, "disconnected") orelse Value.nil;
-}
-
-fn nativeWifiIp(_: *VM, _: Value, _: []const Value, _: ?Value) Value {
-    return Value.nil;
-}
-
-fn nativeMqttConnect(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    _ = args;
-    std.debug.print("[mqtt] connect (stub)\n", .{});
-    return Value.false_;
-}
-
-fn nativeMqttPublish(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    _ = args;
-    std.debug.print("[mqtt] publish (stub)\n", .{});
-    return Value.false_;
-}
-
-fn nativeMqttSubscribe(_: *VM, _: Value, args: []const Value, _: ?Value) Value {
-    _ = args;
-    std.debug.print("[mqtt] subscribe (stub)\n", .{});
-    return Value.false_;
-}
-
-fn nativeMqttStatus(vm: *VM, _: Value, _: []const Value, _: ?Value) Value {
-    return allocString(vm, "disconnected") orelse Value.nil;
 }
 
 // ── Shared value helpers used by collection natives ──────────────────
@@ -1688,7 +1547,7 @@ fn parseFloatPrefix(s: []const u8) f64 {
 
 // ── String allocation helper ─────────────────────────────────────────
 
-fn allocString(vm: *VM, data: []const u8) ?Value {
+pub fn allocString(vm: *VM, data: []const u8) ?Value {
     const payload_bytes = @sizeOf(heap_mod.RStringPayload) + @as(u32, @intCast(data.len));
     const alloc = vm.allocHeapObj(.string, payload_bytes) orelse return null;
     const hdr: *ObjHeader = @ptrCast(@alignCast(alloc.ptr));
