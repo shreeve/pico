@@ -22,6 +22,7 @@ const hal = @import("platform/hal.zig");
 const rp2040 = hal.platform;
 const fmt = @import("lib/fmt.zig");
 const console = @import("bindings/console.zig");
+const wifi = @import("bindings/wifi.zig");
 const rb_runtime = @import("ruby/runtime.zig");
 
 comptime {
@@ -32,6 +33,7 @@ comptime {
     _ = @import("bindings/gpio.zig");
     _ = @import("bindings/led.zig");
     _ = @import("bindings/timers.zig");
+    _ = @import("bindings/wifi.zig");
 }
 
 const BANNER =
@@ -54,6 +56,15 @@ pub fn main() noreturn {
 
     puts(BANNER);
     puts("[boot] platform: RP2040 @ 125 MHz (ruby engine)\n");
+
+    // CYW43 bring-up. Required even when WiFi join is not attempted —
+    // the Pico W's onboard LED is wired to a CYW43 GPIO (not a raw
+    // RP2040 pin), so `bindings/led.zig` needs the driver alive to
+    // succeed. This takes several seconds (SPI backplane + firmware
+    // upload + SDPCM handshake). Any configured -DSSID credential is
+    // loaded into `build_config.ssid/pass` but we do NOT call
+    // `wifi.connect()` here; association is Phase B territory.
+    wifi.init();
 
     rb_runtime.init(.{ .heap_kb = 32 }) catch {
         puts("[boot] FATAL: nanoruby VM init failed\n");
