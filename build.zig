@@ -126,6 +126,16 @@ pub fn build(b: *std.Build) void {
     // USB host mode: zig build -DUSB_HOST (enables USB host for Piccolo)
     const usb_host_enabled = b.option(bool, "USB_HOST", "Enable USB host mode (disables flashing via USB)") orelse false;
 
+    // Reject `-Dengine=ruby -DUSB_HOST` combos: the Ruby path does not
+    // yet wire USB host into its superloop, and a partial-link would
+    // leave the `usb_host` subsystem compiled but uninitialised, with
+    // the Ruby path's stubbed `usbIrq` unable to service events
+    // correctly (footgun per GPT-5.4 review turn 8).
+    if (engine == .ruby and usb_host_enabled) {
+        std.log.err("-Dengine=ruby does not yet support -DUSB_HOST (docs/NANORUBY.md Phase B)", .{});
+        std.process.exit(1);
+    }
+
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "ssid", wifi_ssid);
     build_options.addOption([]const u8, "pass", wifi_pass);

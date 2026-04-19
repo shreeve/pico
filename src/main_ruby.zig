@@ -1,18 +1,20 @@
 // pico — Ruby engine entry point.
 //
-// This is the root source file for `zig build -Dengine=ruby`. The default
-// `zig build -Dengine=js` uses `src/main.zig` instead and is byte-identical
-// to the pre-integration firmware (see docs/NANORUBY.md A2.5 acceptance).
+// Root source file for `zig build -Dengine=ruby`. The default
+// `zig build -Dengine=js` uses `src/main.zig` instead, which is
+// byte-identical to the pre-integration firmware (see
+// docs/NANORUBY.md A2.5 acceptance gate, hash 6265c96b…).
 //
-// Boot flow across A2–A5 in docs/NANORUBY.md:
-//   A2 — platform + console + banner, idle superloop (stub).
-//   A3 — init the nanoruby VM (32 KB heap), install core + platform natives
-//        routed through `src/bindings/*.zig`, enter superloop with LED
-//        blink-state pump + watchdog. Done in this file. No Ruby script
-//        runs yet (that's A5).
-//   A4 — cooperative `sleep_ms` with defined semantics.
-//   A5 — `@embedFile`'d `.nrb` bytecode + `Loader.deserialize` + execute.
-//   A6 — hardware acceptance (blinky.rb).
+// Integration phases (history in git log a31909c..27ced7a):
+//   A1–A2 — vendor fork, native-table split, engine gate.
+//   A3    — nanoruby VM + core + platform natives via bindings_adapter.
+//   A4    — cooperative sleep_ms (wfe + 60 s clamp + re-entrancy guard).
+//   A5    — `@embedFile`'d `.nrb` bytecode + Loader.deserialize + execute.
+//   A6    — hardware acceptance (LED blink, `puts`, fixnum arithmetic,
+//           String alloc + GC under load, cooperative UART reboot).
+//
+// Phase B (deferred): WiFi/MQTT parity, Ruby blocks (see ISSUES.md
+// #15), `pending_native_error` exercise on hardware (ISSUES.md #17).
 
 comptime {
     _ = @import("platform/startup.zig");
@@ -25,10 +27,15 @@ const console = @import("bindings/console.zig");
 const wifi = @import("bindings/wifi.zig");
 const rb_runtime = @import("ruby/runtime.zig");
 
+// These `comptime` imports exist for their side effect: each binding
+// module declares `pub export fn js_*(…) …` symbols that the C
+// function table in `src/js/pico_stdlib_data.c` expects at link time.
+// The Ruby path does NOT call into the `js_*` exports, but the C
+// table still references them, so the symbols must be present or
+// the link fails. Do not delete these imports during a cleanup pass
+// unless `pico_stdlib_data.c` is also taught that the Ruby engine
+// does not need them. See also: `src/main.zig`'s matching block.
 comptime {
-    // Preserve the binding exports that the C function table expects.
-    // The Ruby path doesn't yet call into these from user code, but
-    // dropping them would change the firmware's `extern` surface.
     _ = @import("bindings/console.zig");
     _ = @import("bindings/gpio.zig");
     _ = @import("bindings/led.zig");
@@ -40,7 +47,7 @@ const BANNER =
     \\
     \\  ┌─────────────────────────┐
     \\  │  pico v0.1.0 [ruby]     │
-    \\  │  A3 — VM initialized    │
+    \\  │  nanoruby on metal      │
     \\  └─────────────────────────┘
     \\
 ;
@@ -75,7 +82,11 @@ pub fn main() noreturn {
     hal.init();
     console.init();
 
-    // Same 5 s picocom-connect window as the JS build.
+    // 5 s delay before the first banner write so the UART serial
+    // console host (picocom over CP2102 or debug-probe CDC) has time
+    // to attach after a `picotool load` reboot. Matches the JS path
+    // (`src/main.zig`). Not a CDC-reset quirk — just a human-timing
+    // buffer.
     hal.delayMs(5000);
 
     puts(BANNER);
@@ -88,13 +99,22 @@ pub fn main() noreturn {
     // upload + SDPCM handshake). Any configured -DSSID credential is
     // loaded into `build_config.ssid/pass` but we do NOT call
     // `wifi.connect()` here; association is Phase B territory.
+    //
+    // Policy consequence: Ruby mode pays CYW43 bring-up cost on every
+    // boot even if the script never toggles the LED or touches WiFi.
+    // Acceptable for Phase A; revisit if iteration time becomes an
+    // annoyance.
     wifi.init();
 
     rb_runtime.init(.{ .heap_kb = 32 }) catch {
         puts("[boot] FATAL: nanoruby VM init failed\n");
         hang();
     };
-    puts("[boot] nanoruby VM ready (32 KB heap)\n");
+    // Log the actual arena size, not the ignored `heap_kb` argument.
+    // nanoruby's VM.initDefault() uses DEFAULT_ARENA_SIZE (32 KB); the
+    // InitOptions.heap_kb field is reserved for Phase B (see
+    // src/ruby/runtime.zig::InitOptions).
+    puts("[boot] nanoruby VM ready (32 KB arena, nanoruby default)\n");
 
     // Periodic tick BEFORE runBootScript — see boot-order comment above.
     rp2040.initPeriodicTick();
