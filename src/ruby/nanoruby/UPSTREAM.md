@@ -417,7 +417,21 @@ Acceptance (post-M7, verified locally):
 ISSUES.md #20 updated to mark this as resolved-pending-hardware-
 verification.
 
-### M8 — (reserved for further hardware iteration)
+### M8 — nrbc success message → stdout
+
+Cosmetic. `nrbc.zig`'s final "nrbc: wrote N bytes to …" diagnostic
+was routed to stderr via `eprint`. Zig 0.16's build system flags any
+step with stderr output and echoes the command prefixed with
+"failed command:" — misleading. Switching this one `eprint` to
+`print` (stdout) silences the spurious noise in `zig build` output
+without losing the diagnostic. Error paths (`die`, `parse error`,
+etc.) still use stderr correctly.
+
+Upstream intent: **yes**, though low priority. Standard Unix
+convention puts "I successfully did X" on stdout and "error:" on
+stderr.
+
+### M9 — (reserved for further hardware iteration)
 
 Subsequent modifications enumerated here as they are committed.
 

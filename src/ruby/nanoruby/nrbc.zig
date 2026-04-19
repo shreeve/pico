@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
         defer file.close(io);
         file.writeStreamingAll(io, data) catch die(io, "nrbc: write failed\n", .{});
 
-        eprint(io, "nrbc: wrote {d} bytes to {s}\n", .{ data.len, path });
+        print(io, "nrbc: wrote {d} bytes to {s}\n", .{ data.len, path });
     }
 
     if (!run_mode and output_file == null)

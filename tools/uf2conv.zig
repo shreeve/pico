@@ -102,7 +102,15 @@ pub fn main(init: std.process.Init) !void {
         offset += UF2_PAYLOAD_SIZE;
     }
 
-    std.debug.print("uf2: wrote {d} blocks ({d} bytes payload) -> {s}\n", .{ num_blocks, payload.len, output_path });
+    // Route the success message to stdout rather than stderr. Zig's
+    // build system flags any step with stderr output as "had output"
+    // and echoes the command line — misleadingly prefixed with
+    // "failed command:". Using stdout keeps the `zig build uf2`
+    // log clean while still preserving the actual success diagnostic.
+    var stdout_buf: [256]u8 = undefined;
+    var stdout_fw = std.Io.File.stdout().writer(io, &stdout_buf);
+    stdout_fw.interface.print("uf2: wrote {d} blocks ({d} bytes payload) -> {s}\n", .{ num_blocks, payload.len, output_path }) catch {};
+    stdout_fw.interface.flush() catch {};
 }
 
 fn isElf(data: []const u8) bool {
