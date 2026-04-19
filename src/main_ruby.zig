@@ -47,6 +47,30 @@ const BANNER =
 
 const puts = fmt.puts;
 
+// REQUIRED BOOT ORDER (mirrors src/main.zig and documented to prevent
+// future A6-style regressions — bug history in git log for ef031c1):
+//
+//   1. hal.init()                    — clocks @ 125 MHz, peripherals
+//   2. console.init()                — UART @ 115200
+//   3. wifi.init()                   — CYW43 bring-up; required for
+//                                      the onboard LED (not a raw GPIO)
+//   4. rb_runtime.init(...)          — nanoruby VM + core + platform
+//                                      native tables; installs the
+//                                      adapter table from
+//                                      `bindings_adapter.zig`
+//   5. rp2040.initPeriodicTick()     — **must** be before step 6.
+//                                      The boot script's sleep_ms uses
+//                                      `wfe`, and without a periodic
+//                                      tick IRQ as a wake source,
+//                                      sleep_ms(ms) returns in µs.
+//   6. rb_runtime.runBootScript()    — `@embedFile`'d .nrb; normally
+//                                      never returns (scripts use
+//                                      `while true`).
+//
+// If step 6 ever does return, the trailing `while (true)` below kicks
+// in as a fallback. For Phase A all scripts loop forever, so that
+// path is unreached in practice.
+
 pub fn main() noreturn {
     hal.init();
     console.init();
@@ -72,13 +96,7 @@ pub fn main() noreturn {
     };
     puts("[boot] nanoruby VM ready (32 KB heap)\n");
 
-    // CRITICAL: set up the 10 ms periodic tick BEFORE entering the Ruby
-    // boot script. `runBootScript()` calls `vm.execute()` which enters
-    // the `while true` loop in blinky.rb and never returns. That loop
-    // pumps the superloop via `sleep_ms`'s cooperative tick + `wfe`.
-    // Without `initPeriodicTick()`, `wfe` has no reliable wake source
-    // and either spin-wakes on stray events or hangs — either way,
-    // `sleep_ms(500)` doesn't actually sleep 500 ms.
+    // Periodic tick BEFORE runBootScript — see boot-order comment above.
     rp2040.initPeriodicTick();
 
     rb_runtime.runBootScript();

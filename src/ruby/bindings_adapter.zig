@@ -46,7 +46,10 @@ fn rbGpioMode(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
     const pin_i = args[0].asFixnum() orelse return vm.raise(VmError.TypeError);
     const mode_i = args[1].asFixnum() orelse return vm.raise(VmError.TypeError);
     if (pin_i < 0 or pin_i > 29) return vm.raise(VmError.RangeError);
-    rp2040.gpioInit(@intCast(pin_i), mode_i != 0);
+    // Mode domain is strict: 0 = input, 1 = output. Reject anything
+    // else rather than silently truthiness-coerce an arbitrary integer.
+    if (mode_i != 0 and mode_i != 1) return vm.raise(VmError.RangeError);
+    rp2040.gpioInit(@intCast(pin_i), mode_i == 1);
     return Value.nil;
 }
 
@@ -55,7 +58,9 @@ fn rbGpioWrite(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
     const pin_i = args[0].asFixnum() orelse return vm.raise(VmError.TypeError);
     const val_i = args[1].asFixnum() orelse return vm.raise(VmError.TypeError);
     if (pin_i < 0 or pin_i > 29) return vm.raise(VmError.RangeError);
-    rp2040.gpioSet(@intCast(pin_i), val_i != 0);
+    // Write value domain is strict: 0 = low, 1 = high.
+    if (val_i != 0 and val_i != 1) return vm.raise(VmError.RangeError);
+    rp2040.gpioSet(@intCast(pin_i), val_i == 1);
     return Value.nil;
 }
 
@@ -88,7 +93,10 @@ fn rbLedOff(_: *VM, _: Value, _: []const Value, _: ?Value) Value {
 
 fn rbLedToggle(_: *VM, _: Value, _: []const Value, _: ?Value) Value {
     led.toggle();
-    return Value.fromBool(led.isOn());
+    // Ruby convention: mutator returns nil (or self). Scripts that
+    // care about the post-toggle state can call `led_on? ` once
+    // that query method is added.
+    return Value.nil;
 }
 
 fn rbLedBlink(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
@@ -106,9 +114,12 @@ fn rbLedBlink(vm: *VM, _: Value, args: []const Value, _: ?Value) Value {
 
 fn rbMillis(_: *VM, _: Value, _: []const Value, _: ?Value) Value {
     const ms_u64 = hal.millis();
-    // Fixnum is i32 in this VM. Wrap monotonically past 2^31 ms
-    // (≈ 24.85 days) by truncate-then-bitcast; scripts doing signed
-    // arithmetic over long uptimes must handle the wrap themselves.
+    // nanoruby fixnum is i32. Return value wraps with signed 32-bit
+    // semantics: positive up to 2^31-1 ms (≈ 24.85 days), then flips
+    // negative and continues monotonically. Scripts observing long
+    // uptimes must treat the result as signed-wrap, not unsigned
+    // clock. Lifting this is a nanoruby-VM concern (wider fixnum or
+    // heap-boxed bignum), not a binding-layer fix.
     const ms_u32: u32 = @truncate(ms_u64);
     return Value.fromFixnumUnchecked(@bitCast(ms_u32));
 }

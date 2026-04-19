@@ -147,9 +147,46 @@
     `vm.pending_native_error` and returns `Value.undef`. The VM's
     `invokeNative` path (per the comment at `vm/vm.zig` line ~165)
     checks this field and promotes it into an `ExecResult.err`.
-    Verified by code inspection; not yet exercised on real hardware.
-    If the error surfaces incorrectly in Phase A testing, this is
-    the first place to look.
+    Error propagation path exists by code inspection; not yet
+    validated by an end-to-end script/hardware repro. To exercise:
+    write a test script that calls `led_blink(-1)` or
+    `sleep_ms("abc")` and confirm the firmware prints a matching
+    `[nanoruby] boot script error: ArgumentError/TypeError/...` line
+    instead of crashing silently.
+
+18. **Ruby-mode service progress depends on cooperative yields.**
+    During Ruby VM execution, the only firmware progress guarantees
+    come from `sleep_ms` (or any future explicit yield primitive)
+    calling `superloopTickOnce()`, plus IRQ-driven subsystems that do
+    not enter the VM. A tight Ruby loop without `sleep_ms` starves:
+    - `reboot` UART shell (unresponsive)
+    - `watchdog.feed()` (MCU resets after 8 s — once the watchdog is
+      actually armed, which it is not yet in the Ruby path — see the
+      TODO below)
+    - `led.poll()` (blink-state machine stops advancing)
+    - Phase B WiFi/MQTT/netif pumps (will stall once added)
+
+    This is a core runtime contract, not just "deferred feature work."
+    Documented in `src/ruby/runtime.zig`'s header block; should also
+    be surfaced to script authors in a user-facing doc in Phase B.
+
+    TODO: the Ruby path does not yet call `watchdog.init(8000)`. The
+    `watchdog.feed()` in `superloopTickOnce()` is therefore currently
+    a no-op (the watchdog enabled flag stays false). Arming the
+    watchdog at boot is a Phase A hardening that can land any time
+    now that the 10-minute soak has proven stability in principle.
+
+19. **`reboot` UART shell is duplicated between JS and Ruby paths.**
+    The JS build's `src/main.zig::pollUart` handles `reboot` and
+    `wifi` commands from the main superloop. The Ruby build's
+    `src/ruby/runtime.zig::pollUart` (called from
+    `superloopTickOnce`) handles only `reboot`. Duplication is a
+    maintainability wart created by the byte-identity gate on
+    `main.zig`: any change to the JS-side shell will need to be
+    mirrored (or diverge) in the Ruby side. Low-priority cleanup —
+    likely addressed when the byte-identity gate is eventually
+    relaxed, or when a shared `src/bindings/uart_shell.zig` helper is
+    extracted such that both entry points call it.
 
 ## Toolchain / upstream (Zig 0.16.0)
 

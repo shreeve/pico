@@ -30,6 +30,23 @@
 //
 // Violating any of these produces intermittent crashes that are painful
 // to debug. New contributors must read this header before editing.
+//
+// ════════════════════════════════════════════════════════════════════
+// COOPERATIVE-YIELD CONTRACT (docs/NANORUBY.md §Cooperative sleep_ms)
+//
+// During Ruby VM execution, the ONLY firmware progress guarantees come
+// from `sleep_ms` (or any future explicit yield primitive) calling
+// `superloopTickOnce()` — plus IRQ-driven subsystems that do not enter
+// the VM. A tight Ruby loop without `sleep_ms` is a starvation test:
+//   - `reboot` UART shell stops responding.
+//   - `watchdog.feed()` stops firing; 8 s later the MCU resets.
+//   - `led.poll()` stops advancing the blink-state machine.
+//   - Phase B WiFi/MQTT/netif pumps (when added) will stall.
+//
+// Script authors must therefore yield cooperatively. For the Phase A
+// graduation set (`while true; led_toggle; sleep_ms(ms); end`) this
+// is trivially satisfied. For Phase B scripts the policy should be
+// documented in a user-facing guide, not just a file header.
 // ════════════════════════════════════════════════════════════════════
 
 const std = @import("std");
@@ -42,10 +59,10 @@ const console = @import("../bindings/console.zig");
 const bindings_adapter = @import("bindings_adapter.zig");
 
 pub const InitOptions = struct {
-    /// VM heap size in KB. Currently honored only indirectly — the
-    /// VM uses `DEFAULT_ARENA_SIZE` (32 KB per nanoruby). A future
-    /// revision will accept the buffer from this module instead of
-    /// the VM's file-scope static.
+    /// VM heap size in KB. **Currently ignored.** `VM.initDefault()`
+    /// uses nanoruby's `DEFAULT_ARENA_SIZE` (32 KB). Field retained in
+    /// the API so Phase B can wire through a caller-supplied arena
+    /// buffer without breaking `init()`'s signature.
     heap_kb: u32 = 32,
 };
 
@@ -53,7 +70,7 @@ var vm_state: nanoruby.VM = undefined;
 var initialized: bool = false;
 
 pub fn init(opts: InitOptions) !void {
-    _ = opts;
+    _ = opts; // heap_kb is reserved for Phase B; see InitOptions docs
     if (initialized) return;
 
     vm_state = nanoruby.VM.initDefault();
@@ -67,26 +84,44 @@ pub fn init(opts: InitOptions) !void {
     initialized = true;
 }
 
-/// Reference to the live VM — used by adapters that need to raise or
-/// allocate (none currently — adapters receive `*VM` via the NativeFn
-/// signature). Kept available for Phase B callback-dispatch paths.
+/// Pointer to the live VM, for Phase B callback-dispatch paths.
+/// **Main-loop context only — must not be used from ISR or any
+/// context that violates invariant #1 in the file header.** Right
+/// now no code uses this accessor; it's retained for Phase B
+/// MQTT-subscribe-style machinery that needs to hand a Value back
+/// into the VM from a superloop-drained event queue.
 pub fn vm() *nanoruby.VM {
     return &vm_state;
 }
 
 /// The `.nrb` bytecode blob embedded at build time via
 /// `fw_module.addAnonymousImport("script_bytecode", …)` in build.zig.
-/// `@embedFile` places it in `.rodata` (flash). The `Loader.deserialize`
-/// call below aliases pointers into this blob; since `.rodata` is
-/// immutable and never moved by the VM's GC, the aliasing is stable
-/// across `vm.execute()` (see docs/NANORUBY.md A5 lifetime audit).
+/// `@embedFile` places it in `.rodata` (flash).
+///
+/// Lifetime contract (narrowed to the M6 `.nrb` v2 format): for the
+/// fields `Loader.deserialize` currently populates — `bytecode`,
+/// `const_pool` backing, `syms` backing, `string_literals` byte
+/// slices — the aliased pointers resolve to `.rodata` (immutable
+/// flash) or `nrb.zig`'s file-scope BSS storage. Neither is relocated
+/// by the VM's compacting GC, so stack-local `IrFunc` is safe across
+/// `vm.execute()`. If the format grows further (child_funcs, floats —
+/// see ISSUES.md #15), re-audit this contract against the new
+/// backing stores before trusting it.
 const script_bytecode = @embedFile("script_bytecode");
 
 /// Run the embedded boot script. Called once from `main()` before
 /// entering the superloop. The script drives the LED via `led_toggle`
 /// and paces itself via `sleep_ms`, which internally pumps
 /// `superloopTickOnce()` — so even long-running Ruby `while true`
-/// loops keep the watchdog fed and the LED blink-state machine live.
+/// loops keep the LED blink-state machine live and the UART reboot
+/// shell responsive.
+///
+/// TODO(phase-A-hardening): `superloopTickOnce()` also calls
+/// `watchdog.feed()`, but `watchdog.init(8000)` is NOT yet called on
+/// the Ruby path (see ISSUES.md #18). Until that lands, the feed is
+/// a no-op. Arm the watchdog in `main_ruby.zig` between
+/// `rb_runtime.init()` and `rp2040.initPeriodicTick()` once we've
+/// run a full 10-minute soak without surprises.
 pub fn runBootScript() void {
     var func: nanoruby.IrFunc = .{
         .bytecode = undefined,
@@ -147,6 +182,11 @@ pub fn superloopTickOnce() void {
 
 const reboot_cmd: []const u8 = "reboot";
 
+// Main-loop only. Not IRQ-safe. `pollUart()` is exclusively called
+// from `superloopTickOnce()` which itself is main-loop-only per
+// invariant #1. If a future contributor ever wires UART polling into
+// an ISR, this buffer needs either a dedicated ring-buffer feeder or
+// explicit interrupt-disable around the read/accumulate.
 var uart_cmd_buf: [16]u8 = undefined;
 var uart_cmd_len: usize = 0;
 
@@ -176,8 +216,14 @@ pub const MAX_SLEEP_MS: u32 = 60_000;
 
 /// Re-entrancy guard. `sleep_ms` is not re-entrant (invariant #5 in
 /// the file header). If a Phase B callback is ever dispatched from
-/// inside `sleep_ms`, this flag traps the caller rather than
-/// allowing an undetected nested pump.
+/// inside `sleep_ms`, this flag traps the caller — nested call
+/// returns immediately without pumping — rather than allowing an
+/// undetected nested pump.
+///
+/// **Main-loop only. Not IRQ-safe.** Protected exclusively by
+/// invariant #1 (no VM entry from IRQ). If that invariant is ever
+/// violated, this flag races. A future revision in debug builds
+/// might assert main-loop context here rather than silently skip.
 var in_sleep: bool = false;
 
 /// Cooperative sleep. Blocks Ruby execution for ≥ `ms` milliseconds
