@@ -32,6 +32,7 @@
 // to debug. New contributors must read this header before editing.
 // ════════════════════════════════════════════════════════════════════
 
+const std = @import("std");
 const nanoruby = @import("nanoruby.zig");
 const hal = @import("../platform/hal.zig");
 const rp2040 = hal.platform;
@@ -121,14 +122,51 @@ pub fn runBootScript() void {
 /// every iteration of `sleepMsCooperative` (A4) calls this exactly
 /// once. Keep it tight and bounded — no blocking calls.
 ///
-/// Phase A set: watchdog feed + LED blink poll. WiFi/MQTT/netif/USB
-/// pollers land when their bindings are actually invoked from Ruby
-/// (Phase B). Phase A blinky.rb only needs the LED + watchdog, and
-/// keeping the pump minimal reduces the "what could wake from wfe?"
-/// surface area.
+/// Phase A set: watchdog feed + LED blink poll + UART shell poll
+/// (for the `reboot` command, essential for the dev flash loop).
+/// WiFi/MQTT/netif/USB pollers land when their bindings are actually
+/// invoked from Ruby (Phase B). Phase A scripts only need these
+/// three, and keeping the pump minimal reduces the "what could wake
+/// from wfe?" surface area.
 pub fn superloopTickOnce() void {
     watchdog.feed();
     led.poll();
+    pollUart();
+}
+
+// ── UART shell ───────────────────────────────────────────────────────
+//
+// The JS build's `src/main.zig` owns a `pollUart` that listens for the
+// `reboot` command (and a `wifi` retry). The Ruby build cannot reuse
+// main.zig's version because (a) main.zig is frozen for byte-identity
+// (docs/NANORUBY.md A2.5), and (b) the Ruby superloop is actually
+// `sleep_ms`'s cooperative-pump, not a top-level loop. Duplicate the
+// minimum here: `reboot` is the only command needed to drive the
+// dev-flash iteration. If a `wifi` retry is ever needed from the Ruby
+// path, extend this helper.
+
+const reboot_cmd: []const u8 = "reboot";
+
+var uart_cmd_buf: [16]u8 = undefined;
+var uart_cmd_len: usize = 0;
+
+fn pollUart() void {
+    while (rp2040.uartReadAvailable(rp2040.UART0_BASE)) {
+        const ch = rp2040.uartRead(rp2040.UART0_BASE);
+        if (ch == '\r' or ch == '\n') {
+            const cmd = uart_cmd_buf[0..uart_cmd_len];
+            if (cmd.len == reboot_cmd.len and std.mem.eql(u8, cmd, reboot_cmd)) {
+                console.puts("[reboot] entering BOOTSEL mode...\n");
+                rp2040.resetToUsbBoot();
+            }
+            uart_cmd_len = 0;
+        } else if (uart_cmd_len < uart_cmd_buf.len) {
+            uart_cmd_buf[uart_cmd_len] = ch;
+            uart_cmd_len += 1;
+        } else {
+            uart_cmd_len = 0;
+        }
+    }
 }
 
 /// Hard clamp on a single `sleep_ms` call. Longer Ruby sleeps must
