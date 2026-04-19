@@ -195,6 +195,38 @@ pub fn build(b: *std.Build) void {
         .flags = c_flags,
     });
 
+    // Ruby engine extras: build nrbc on the host, compile the selected
+    // .rb file at build time, embed the resulting .nrb bytecode into the
+    // firmware. All gated to `-Dengine=ruby` so the JS path stays
+    // untouched (byte-identical JS UF2 is a hard acceptance gate, see
+    // docs/NANORUBY.md A2.5).
+    if (engine == .ruby) {
+        const ruby_script = b.option(
+            []const u8,
+            "ruby_script",
+            "Path to .rb script to compile and embed (default: scripts/blinky.rb)",
+        ) orelse "scripts/blinky.rb";
+
+        const nrbc_mod = b.createModule(.{
+            .root_source_file = b.path("src/ruby/nanoruby/nrbc.zig"),
+            .target = host_target,
+            .optimize = .ReleaseFast,
+        });
+        const nrbc = b.addExecutable(.{
+            .name = "nrbc",
+            .root_module = nrbc_mod,
+        });
+
+        const compile_rb = b.addRunArtifact(nrbc);
+        compile_rb.addFileArg(b.path(ruby_script));
+        compile_rb.addArg("-o");
+        const nrb_path = compile_rb.addOutputFileArg("script.nrb");
+
+        fw_module.addAnonymousImport("script_bytecode", .{
+            .root_source_file = nrb_path,
+        });
+    }
+
     const firmware = b.addExecutable(.{
         .name = "pico",
         .root_module = fw_module,

@@ -118,6 +118,41 @@
     Timer is driven by elapsed wall-clock milliseconds, not loop iterations.
     Elapsed is clamped to 10s max to avoid instant draining after stalls.
 
+## Nanoruby integration (Phase A)
+
+15. **`.nrb` serializer does not recurse into `child_funcs`.** In
+    `src/ruby/nanoruby/vm/nrb.zig`, `serialize` writes a single
+    `IrFunc` and hardcodes the function count to 1. Ruby blocks
+    (`loop { … }`, `5.times { |i| … }`, `each { }`) compile to child
+    functions in the IR; they do not roundtrip through the current
+    `.nrb` format. Firmware scripts for Phase A use `while true` form
+    instead. Fix for Phase B: extend `serialize`/`deserialize` to walk
+    `child_funcs` recursively (bump `nrb.zig` format version to 2;
+    firmware loader then rejects v1 and v2 appropriately). This is
+    an upstream feature request for nanoruby, not a pico-local fix.
+
+16. **`Loader.deserialize(data, &func)` only initializes 5 fields.**
+    `nregs`, `nlocals`, `bytecode_len`, `bytecode`, `const_pool` are
+    populated; `child_funcs`, `syms`, `param_spec`, `name_sym`,
+    `source_line`, `captured_mask`, `string_literals`, `float_pool`
+    are left at caller-supplied values (or `undefined` if the caller
+    used `var func: IrFunc = undefined`). Pico's `runBootScript`
+    explicitly zero-initialises the 5 no-default fields before
+    deserialize; the rest use the struct defaults (`&.{}` / `0`). If
+    issue #15 is fixed for blocks, `deserialize` will also need to
+    populate `child_funcs`, `syms`, `string_literals`, `float_pool`
+    from the serialized payload.
+
+17. **Native-method error raising depends on `pending_native_error`
+    being checked by the VM.** `bindings_adapter.zig` returns
+    `vm.raise(VmError.ArgumentError)` on bad args. This sets
+    `vm.pending_native_error` and returns `Value.undef`. The VM's
+    `invokeNative` path (per the comment at `vm/vm.zig` line ~165)
+    checks this field and promotes it into an `ExecResult.err`.
+    Verified by code inspection; not yet exercised on real hardware.
+    If the error surfaces incorrectly in Phase A testing, this is
+    the first place to look.
+
 ## Toolchain / upstream (Zig 0.16.0)
 
 13. **Aro translate-c miscompiles BearSSL inline helpers under 0.16.**

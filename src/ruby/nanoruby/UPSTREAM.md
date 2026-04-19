@@ -259,7 +259,40 @@ Acceptance:
   hosted-std strings = 0.
 - All six build targets green.
 
-### M5 — (reserved for A5 host nrbc build + bytecode embedding)
+### M5 — Host nrbc build + bytecode embed (A5, pico-local only)
+
+No vendored-tree edits. All changes are in pico-local files
+(`build.zig`, `pico/src/ruby/runtime.zig`, `scripts/blinky*.rb`).
+
+Edits:
+
+- `build.zig` inside `if (engine == .ruby)` — build `nrbc` from the
+  vendored `src/ruby/nanoruby/nrbc.zig` as a host-native executable,
+  run it on the `-Druby_script` path (default `scripts/blinky.rb`),
+  pipe the resulting `.nrb` into `fw_module.addAnonymousImport
+  ("script_bytecode", ...)`. The `.js` arm is completely untouched.
+- `pico/src/ruby/runtime.zig` — replace the A4 `runBootScript` stub
+  with a real implementation: declare a stack-local `IrFunc` with
+  explicit defaults for the 5 no-default fields (issue #16), call
+  `Loader.deserialize(script_bytecode, &func)`, then
+  `vm_state.execute(&func)`. Reports deserialize + execution errors
+  to the UART console via `console.puts` + `@errorName`.
+- `scripts/blinky.rb`, `scripts/blinky_2.rb`, `scripts/blinky_3.rb`
+  — Phase A graduation scripts, all using `while true` (not
+  `loop { }` — the current `.nrb` format drops child funcs; see
+  ISSUES.md #15).
+
+Acceptance (all A5 gates green):
+
+- `.js` byte-identical (plain/SSID/USB_HOST all match baselines).
+- `.ruby` UF2 with embedded blinky.rb: 813 blocks, 208120-byte
+  payload, `.text`=201300. Bytecode blob 46 bytes (blinky.rb) /
+  53 bytes (blinky_2.rb) / 64 bytes (blinky_3.rb).
+- Hosted-std strings check: 0 matches.
+- All six build targets green.
+
+### M6 — (reserved for A6 hardware iteration, if any vendored-tree
+edits are needed)
 
 Subsequent modifications enumerated here as they are committed.
 

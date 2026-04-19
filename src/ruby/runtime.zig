@@ -73,11 +73,48 @@ pub fn vm() *nanoruby.VM {
     return &vm_state;
 }
 
-/// Run the embedded boot script. Stub at A3; fleshed out in A5 (the
-/// `@embedFile`'d `.nrb` bytecode is deserialized via
-/// `nanoruby.Loader` and executed on the initialized VM).
+/// The `.nrb` bytecode blob embedded at build time via
+/// `fw_module.addAnonymousImport("script_bytecode", …)` in build.zig.
+/// `@embedFile` places it in `.rodata` (flash). The `Loader.deserialize`
+/// call below aliases pointers into this blob; since `.rodata` is
+/// immutable and never moved by the VM's GC, the aliasing is stable
+/// across `vm.execute()` (see docs/NANORUBY.md A5 lifetime audit).
+const script_bytecode = @embedFile("script_bytecode");
+
+/// Run the embedded boot script. Called once from `main()` before
+/// entering the superloop. The script drives the LED via `led_toggle`
+/// and paces itself via `sleep_ms`, which internally pumps
+/// `superloopTickOnce()` — so even long-running Ruby `while true`
+/// loops keep the watchdog fed and the LED blink-state machine live.
 pub fn runBootScript() void {
-    // A5 populates this.
+    var func: nanoruby.IrFunc = .{
+        .bytecode = undefined,
+        .bytecode_len = 0,
+        .nregs = 0,
+        .nlocals = 0,
+        .const_pool = &.{},
+        // Remaining fields default to empty slices / zero per IrFunc's
+        // struct defaults. Caller-init is explicit because
+        // `Loader.deserialize` overwrites only the 5 no-default fields.
+    };
+
+    nanoruby.Loader.deserialize(script_bytecode, &func) catch |err| {
+        console.puts("[nanoruby] bytecode load failed: ");
+        console.puts(@errorName(err));
+        console.puts("\n");
+        return;
+    };
+
+    console.puts("[nanoruby] executing boot script\n");
+    const result = vm_state.execute(&func);
+    switch (result) {
+        .ok => console.puts("[nanoruby] boot script returned\n"),
+        .err => |e| {
+            console.puts("[nanoruby] boot script error: ");
+            console.puts(@errorName(e));
+            console.puts("\n");
+        },
+    }
 }
 
 /// Shared cooperative-pump. Every iteration of the main superloop AND
